@@ -3,8 +3,8 @@ module github.com/hollis-labs/go-runner
 go 1.26.1
 
 require (
-	github.com/hollis-labs/go-providers v0.0.0-00010101000000-000000000000
-	github.com/hollis-labs/go-sandbox v0.0.0-00010101000000-000000000000
+	github.com/hollis-labs/go-providers v0.5.0
+	github.com/hollis-labs/go-sandbox v0.1.0
 )
 
 require (
@@ -17,9 +17,4 @@ require (
 	go.opentelemetry.io/otel/metric v1.43.0 // indirect
 	go.opentelemetry.io/otel/trace v1.43.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
-)
-
-replace (
-	github.com/hollis-labs/go-providers => ../go-providers
-	github.com/hollis-labs/go-sandbox => ../go-sandbox
 )

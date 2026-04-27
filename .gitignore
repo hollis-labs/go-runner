@@ -4,3 +4,7 @@
 /dist/
 /bin/
 .DS_Store
+
+# go.work is for local cross-module overrides; not checked in.
+go.work
+go.work.sum

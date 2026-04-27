@@ -53,10 +53,13 @@ The runner emits four `EventKind` values:
 | `process.exited`             | once, after `cmd.Wait` returns (clean or non-zero)      | `exit_code`, `error`                       |
 | `process.timeout`            | once, in place of `process.exited` when ctx deadline hit | `error`                                    |
 
-Order guarantee: `process.started` is always first, exactly one of
-`process.exited`/`process.timeout` is always last. `provider.event`s appear
-between them, including any terminal `EventDone`/`EventError` produced by
-the adapter (`is_turn_complete=true` flags those for consumers).
+Order guarantee: once the process has successfully started, `process.started`
+is always first and exactly one of `process.exited`/`process.timeout` is
+always last. `provider.event`s appear between them, including any terminal
+`EventDone`/`EventError` produced by the adapter (`is_turn_complete=true`
+flags those for consumers). If `Run` returns an error before spawning or
+starting the process (config validation, provider Detect failure, stdout
+pipe, sandbox Apply, or `cmd.Start` failure), no events are emitted.
 
 `OnEvent` is invoked **synchronously** from the spawn goroutine. Slow
 callbacks block the stream; fan out to your own channel or goroutine if

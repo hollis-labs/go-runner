@@ -51,8 +51,12 @@ type Config struct {
 // Run spawns cfg.Provider's binary under cfg.Profile, streams its stdout
 // through the adapter, and emits runner Events via cfg.OnEvent until the
 // process exits or the context is cancelled. Run returns the wait error
-// (nil on clean exit) plus any sandbox-apply or pipe-setup error. The
-// terminal Event is always emitted before Run returns.
+// (nil on clean exit) plus any sandbox-apply or pipe-setup error. Setup
+// and validation failures (missing required Config fields, provider
+// Detect failure, stdout-pipe error, sandbox.Apply error, cmd.Start
+// error) return before any Events are emitted; once the process has
+// successfully started, the terminal Event (process.exited or
+// process.timeout) is always emitted before Run returns.
 func Run(ctx context.Context, cfg Config) error {
 	if cfg.Provider == nil {
 		return errors.New("runner: Config.Provider is required")
