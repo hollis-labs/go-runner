@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"syscall"
 	"time"
@@ -45,6 +46,13 @@ type Config struct {
 	// sidecar log file). Nil leaves cmd.Stderr unset, which os/exec
 	// routes to os.DevNull.
 	Stderr io.Writer
+
+	// ExtraFiles is the additional set of open files to be inherited by
+	// the spawned process. The first entry maps to FD 3, the second to
+	// FD 4, and so on (per os/exec.Cmd.ExtraFiles semantics). Used by
+	// consumers that need to plumb out-of-band channels into the spawned
+	// binary. Nil leaves the default empty.
+	ExtraFiles []*os.File
 
 	// WaitDelay is the grace period between SIGTERM (on context cancel)
 	// and SIGKILL. Zero falls through to provider.DefaultWaitDelay.
@@ -91,6 +99,9 @@ func Run(ctx context.Context, cfg Config) error {
 	}
 	if cfg.Stderr != nil {
 		cmd.Stderr = cfg.Stderr
+	}
+	if len(cfg.ExtraFiles) > 0 {
+		cmd.ExtraFiles = cfg.ExtraFiles
 	}
 
 	stdout, err := cmd.StdoutPipe()

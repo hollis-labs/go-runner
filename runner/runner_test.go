@@ -23,9 +23,9 @@ import (
 // "type" field of "delta" or "done" — and maps each to a StreamEvent.
 type stubAdapter struct{ binPath string }
 
-func (s *stubAdapter) Name() string                 { return "stub" }
+func (s *stubAdapter) Name() string                      { return "stub" }
 func (s *stubAdapter) BuildArgs(_, _, _ string) []string { return nil }
-func (s *stubAdapter) Detect() (string, bool)       { return s.binPath, true }
+func (s *stubAdapter) Detect() (string, bool)            { return s.binPath, true }
 
 func (s *stubAdapter) ParseLine(line []byte) ([]provider.StreamEvent, error) {
 	var raw struct {
@@ -241,5 +241,75 @@ func TestRun_Stderr_NilLeavesCmdStderrUnset(t *testing.T) {
 	}
 	if err := runner.Run(context.Background(), cfg); err != nil {
 		t.Fatalf("Run with nil Stderr: %v", err)
+	}
+}
+
+func TestConfig_ExtraFiles_PassesToChild(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test script needs sh; not running on Windows")
+	}
+
+	workspace := t.TempDir()
+	script := filepath.Join(workspace, "fake-cli.sh")
+	body := `#!/bin/sh
+IFS= read -r payload <&3
+printf '{"type":"delta","content":"%s"}\n' "$payload"
+printf '{"type":"done"}\n'
+`
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+
+	readEnd, writeEnd, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	defer readEnd.Close()
+
+	if _, err := writeEnd.WriteString("fd3-payload\n"); err != nil {
+		t.Fatalf("write pipe: %v", err)
+	}
+	if err := writeEnd.Close(); err != nil {
+		t.Fatalf("close write pipe: %v", err)
+	}
+
+	var (
+		mu     sync.Mutex
+		events []runner.Event
+	)
+	cfg := runner.Config{
+		Provider:   &stubAdapter{binPath: script},
+		Workspace:  workspace,
+		ExtraFiles: []*os.File{readEnd},
+		OnEvent: func(ev runner.Event) {
+			mu.Lock()
+			defer mu.Unlock()
+			events = append(events, ev)
+		},
+	}
+
+	if err := runner.Run(context.Background(), cfg); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	var gotDelta string
+	for _, ev := range events {
+		if ev.Kind != runner.EventProviderEvent {
+			continue
+		}
+		se, ok := ev.Payload["event"].(provider.StreamEvent)
+		if !ok {
+			continue
+		}
+		if se.Type == provider.EventDelta {
+			gotDelta = se.Content
+			break
+		}
+	}
+	if gotDelta != "fd3-payload" {
+		t.Fatalf("delta content = %q, want %q", gotDelta, "fd3-payload")
 	}
 }
