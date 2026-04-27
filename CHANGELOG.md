@@ -3,6 +3,42 @@
 All notable changes to `go-runner` are documented in this file. Per-release
 notes are also published as GitHub Releases.
 
+## v0.2.0 — 2026-04-27
+
+Adds caller-controlled stderr capture. Filed in clockwork as
+`CW-20260427-0044`; consumed by clockwork-manifold's wrapper-driven
+executor (`CW-20260427-0040`) to preserve the per-run stderr sidecar log
+that clockwork's existing `attachStderrCapture` writes to
+`$CLOCKWORK_DATA_DIR/runs/<run_id>.stderr.log`.
+
+### Public API additions
+
+- `runner.Config.Stderr io.Writer` — when non-nil, wired to `cmd.Stderr`
+  before spawn. Bytes flow through verbatim; the runner does not parse,
+  buffer, or aggregate stderr. Pass `io.MultiWriter` to fan out (e.g.
+  in-memory tail buffer plus a file). Nil leaves `cmd.Stderr` unset,
+  which `os/exec` routes to `os.DevNull` (no behavior change for v0.1
+  callers).
+
+### Other
+
+- README "In scope" / "Out of scope" sections updated to reflect Stderr
+  passthrough.
+- `internal/stubcli` gains a `-stderr-msg <line>` flag for testing the
+  Stderr passthrough path.
+- New tests: `TestRun_Stderr_CapturesToWriter`,
+  `TestRun_Stderr_NilLeavesCmdStderrUnset`.
+
+### Verification
+
+- darwin host: `go build ./...`, `go vet ./...`, `go test -race -timeout 60s ./...` — 7 PASS
+- linux cross-compile: `GOOS=linux go build ./...`, `go vet ./...` — ok
+
+### Origin
+
+Clockwork ticket `CW-20260427-0044` under epic `EP-20260427-0001`
+(clockwork-side adoption of CLI substrate libs + signal-protocol redesign).
+
 ## v0.1.0 — 2026-04-27
 
 Initial release. Thin substrate that composes

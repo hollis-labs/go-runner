@@ -171,6 +171,8 @@ terminal events. None of those choices belong in this library.
 - Spawn + grace-period (delegated to `go-providers`)
 - Sandbox wrapping (delegated to `go-sandbox`)
 - Line-by-line stdout streaming via `cfg.Provider.ParseLine`
+- Stderr passthrough to a caller-supplied `io.Writer` via `Config.Stderr`
+  (use `io.MultiWriter` for sidecar logging + in-memory tail)
 - Raw event emission via callback
 - Process-lifecycle terminal-event guarantee (always exactly one of
   `process.exited` / `process.timeout` per Run)
@@ -178,9 +180,11 @@ terminal events. None of those choices belong in this library.
 ## Out of scope
 
 - App vocabulary (FSM transitions, broker events, plugin lifecycle).
-- Stderr capture or aggregation. Stderr passes through whatever the
-  caller configured before `Run` (and by default to the inherited
-  process's stderr).
+- Stderr aggregation or interpretation. The runner only wires
+  `cfg.Stderr` to `cmd.Stderr`; bytes flow through verbatim. When
+  `cfg.Stderr` is nil, `cmd.Stderr` stays unset and `os/exec` routes to
+  `os.DevNull` (its default for nil `Stderr`). Callers wanting parent-
+  process passthrough should pass `os.Stderr` explicitly.
 - Output formats other than line-delimited (newline-terminated). The
   underlying scanner uses a 1 MiB max line size to match `go-providers`.
 - Adapter argument construction. `Args` is the raw argv. If you want

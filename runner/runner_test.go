@@ -1,12 +1,14 @@
 package runner_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -201,5 +203,43 @@ func TestRun_NoProfile_SkipsSandbox(t *testing.T) {
 	}
 	if count < 3 {
 		t.Errorf("expected >=3 events without sandbox, got %d", count)
+	}
+}
+
+func TestRun_Stderr_CapturesToWriter(t *testing.T) {
+	bin := buildStubCLI(t)
+	workspace := t.TempDir()
+
+	var stderrBuf bytes.Buffer
+	cfg := runner.Config{
+		Provider:  &stubAdapter{binPath: bin},
+		Workspace: workspace,
+		Args:      []string{"-count", "1", "-stderr-msg", "diagnostic-line"},
+		Stderr:    &stderrBuf,
+		OnEvent:   func(runner.Event) {},
+	}
+	if err := runner.Run(context.Background(), cfg); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	got := stderrBuf.String()
+	if !strings.Contains(got, "diagnostic-line") {
+		t.Errorf("Stderr buffer = %q, want to contain %q", got, "diagnostic-line")
+	}
+}
+
+func TestRun_Stderr_NilLeavesCmdStderrUnset(t *testing.T) {
+	// Sanity: passing a nil Stderr (the zero-value default) does not
+	// regress the "no caller knob" behavior — Run completes cleanly and
+	// any process stderr goes to /dev/null per os/exec's default.
+	bin := buildStubCLI(t)
+	workspace := t.TempDir()
+	cfg := runner.Config{
+		Provider:  &stubAdapter{binPath: bin},
+		Workspace: workspace,
+		Args:      []string{"-count", "1", "-stderr-msg", "should-be-discarded"},
+		OnEvent:   func(runner.Event) {},
+	}
+	if err := runner.Run(context.Background(), cfg); err != nil {
+		t.Fatalf("Run with nil Stderr: %v", err)
 	}
 }

@@ -14,7 +14,7 @@
 //
 //  1. Resolve binary via cfg.Provider.Detect() (or fail).
 //  2. Build *exec.Cmd with cfg.Args, cfg.Env, cfg.Workspace as the working
-//     directory.
+//     directory. cfg.Stderr (if non-nil) is wired to cmd.Stderr.
 //  3. If cfg.Profile is non-zero, wrap the cmd via go-sandbox Apply (mutates
 //     cmd.Path/Args; returns cleanup that runs after Wait).
 //  4. Set cmd.Cancel = SIGTERM and cmd.WaitDelay (grace-period). The wait-

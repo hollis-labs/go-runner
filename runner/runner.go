@@ -39,6 +39,13 @@ type Config struct {
 	// os/exec defaults; an empty non-nil slice disables inheritance.
 	Env []string
 
+	// Stderr, when non-nil, is wired to cmd.Stderr before spawn. The
+	// runner does not interpret stderr — bytes flow through verbatim.
+	// Use io.MultiWriter to fan out (e.g. an in-memory buffer plus a
+	// sidecar log file). Nil leaves cmd.Stderr unset, which os/exec
+	// routes to os.DevNull.
+	Stderr io.Writer
+
 	// WaitDelay is the grace period between SIGTERM (on context cancel)
 	// and SIGKILL. Zero falls through to provider.DefaultWaitDelay.
 	WaitDelay time.Duration
@@ -81,6 +88,9 @@ func Run(ctx context.Context, cfg Config) error {
 	cmd.Dir = cfg.Workspace
 	if cfg.Env != nil {
 		cmd.Env = cfg.Env
+	}
+	if cfg.Stderr != nil {
+		cmd.Stderr = cfg.Stderr
 	}
 
 	stdout, err := cmd.StdoutPipe()
