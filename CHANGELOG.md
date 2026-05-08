@@ -3,6 +3,88 @@
 All notable changes to `go-runner` are documented in this file. Per-release
 notes are also published as GitHub Releases.
 
+## v0.3.0 — 2026-05-08
+
+Adds structured exit info, opt-in process supervision, and OS-native
+resource limits. Foundation Tier-1 work for the portfolio agent-boot
+unification (cross-app design at
+`agent-workspaces/planning/agent-boot-unification/2026-05-07-cross-app-design.md`).
+The recovery-broker pattern in nanite consumes `ExitError.Cause` to
+classify failures cleanly; mux and clockwork-manifold get supervision
+and resource enforcement they were each rolling app-side.
+
+### Public API additions
+
+- `runner.ExitError` (returned via `errors.As`) — `Code`, `Signal`,
+  `Killed`, `ProcessState`, `Cause`. Wraps the underlying wait error
+  via `Unwrap`. Existing callers that only check `err != nil` are
+  unchanged. Clean exits return `nil`.
+- `runner.Cause*` constants: `CauseIdleTimeout`, `CauseWatchdogKill`,
+  `CauseRestartExhausted`, `CauseOOMKill`, `CauseResourceLimit`.
+- `runner.Config.Supervisor *SupervisorOptions` — opt-in process
+  supervision (idle-kill, restart-on-crash, watchdog).
+  `SupervisorOptions` fields: `IdleKill`, `IdleKillGrace`,
+  `RestartOnCrash`, `MaxRestartBackoff`, `WatchdogTimeout`,
+  `ActivityCallback`. Default `nil` preserves prior behavior.
+- `runner.Config.ResourceLimits ResourceLimits` — opt-in OS resource
+  caps. Fields: `CPUTime`, `MemoryMax`, `MaxOpenFiles`, `MaxProcesses`,
+  `MaxFileSize`. Zero value = unlimited.
+- New event kinds: `EventRestart`, `EventIdleKill`, `EventWatchdog`,
+  `EventResourceLimitHit`. See README event alphabet for stable
+  payload shapes.
+
+### Behavior changes
+
+- `Run` now returns `*ExitError` (extractable via `errors.As`) for
+  non-clean exits. The function signature itself is unchanged
+  (`func Run(ctx, cfg) error`).
+- `EventProcessExited` payload gains stable keys: `signal`, `killed`,
+  `cause`, alongside existing `exit_code` and `error`. Removing
+  existing keys would be a break; adding new ones is additive per
+  the README's stable-shape contract.
+- Supervisor goroutines are spawned only when `cfg.Supervisor != nil`.
+  No goroutines, no timers, no cost when supervision is disabled.
+
+### Per-platform resource limits
+
+- **Linux + systemd-run --user available**: `MemoryMax` enforced via
+  cgroup v2 (real OOM-kill). Other limits via `ulimit`.
+- **Linux without systemd**: all limits via `ulimit` setrlimit (memory
+  via RLIMIT_AS — advisory; document as such).
+- **macOS**: all limits via `ulimit` except `MemoryMax`, which is
+  silently dropped (RLIMIT_AS not exposed via darwin's bash; no
+  systemd; VM isolation is the right answer for darwin and out of
+  scope here).
+- **Windows**: unsupported; `applyResourceLimitsImpl` returns an
+  error if a non-zero `ResourceLimits` is configured.
+
+### Known gaps / caveats
+
+- Go's runtime swallows `SIGXCPU` on at least darwin, so Go-binary
+  consumers may not terminate at the `CPUTime` soft limit. Native
+  C-based binaries (sh, claude, codex, etc.) honor `SIGXCPU`
+  normally. Documented in the Resource limits README section.
+- `bash`'s `ulimit -f` defaults to 1024-byte blocks (not POSIX 512);
+  go-runner's wrap matches that default. No effect on linux's dash.
+
+### Verification
+
+- darwin host: `go vet ./...`, `go test -race -timeout 180s ./...` —
+  green (16 tests including new ExitError, supervision, and
+  resource-limits coverage).
+- linux cross-compile: `GOOS=linux go build ./...`,
+  `GOOS=linux go vet ./...` — ok.
+- Live linux run with systemd-run + bwrap is a known follow-up;
+  test `TestResourceLimits_MemoryMax_Linux` skips when systemd-run
+  --user is unavailable.
+
+### Origin
+
+Tier-1 foundation work surfaced during the portfolio agent-boot
+unification (clockwork S2.5 smoke gap analysis, 2026-05-07). Tracking
+prompt at
+`agent-workspaces/execution/go-runner/2026-05-08/implementer-prompt.md`.
+
 ## v0.2.0 — 2026-04-27
 
 Adds caller-controlled stderr capture. Filed in clockwork as
