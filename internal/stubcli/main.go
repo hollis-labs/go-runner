@@ -15,6 +15,9 @@
 //	-burn-cpu     D   after emitting events, busy-loop for D before exit
 //	                  (used to test resource limits)
 //	-malloc-mb    N   after emitting events, allocate N MiB and hold it
+//	-show-rlimits     before emitting events, print current RLIMIT_*
+//	                  values as delta lines (used by go-runner ResourceLimits
+//	                  tests)
 package main
 
 import (
@@ -27,6 +30,15 @@ import (
 	"time"
 )
 
+func emitRlimit(name string, resource int) {
+	var rlim syscall.Rlimit
+	if err := syscall.Getrlimit(resource, &rlim); err != nil {
+		fmt.Fprintf(os.Stdout, "{\"type\":\"delta\",\"content\":\"%s=err \"}\n", name)
+		return
+	}
+	fmt.Fprintf(os.Stdout, "{\"type\":\"delta\",\"content\":\"%s=%d \"}\n", name, rlim.Cur)
+}
+
 func main() {
 	count := flag.Int("count", 3, "number of delta events to emit")
 	fail := flag.Bool("fail", false, "exit with status 2 after writing events")
@@ -35,6 +47,7 @@ func main() {
 	trapSigterm := flag.Bool("trap-sigterm", false, "install a SIGTERM handler that ignores the signal")
 	burnCPU := flag.Duration("burn-cpu", 0, "after emitting events, busy-loop for this duration before exit")
 	mallocMB := flag.Int("malloc-mb", 0, "after emitting events, allocate this many MiB and hold it")
+	showRlimits := flag.Bool("show-rlimits", false, "before emitting events, print current RLIMIT_* values as delta lines")
 	flag.Parse()
 
 	if *trapSigterm {
@@ -49,6 +62,12 @@ func main() {
 
 	if *stderrMsg != "" {
 		fmt.Fprintln(os.Stderr, *stderrMsg)
+	}
+
+	if *showRlimits {
+		emitRlimit("cpu", syscall.RLIMIT_CPU)
+		emitRlimit("nofile", syscall.RLIMIT_NOFILE)
+		emitRlimit("fsize", syscall.RLIMIT_FSIZE)
 	}
 
 	for i := 0; i < *count; i++ {
