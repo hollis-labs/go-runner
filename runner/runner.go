@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"sync"
 	"syscall"
 	"time"
 
@@ -45,6 +46,11 @@ type Config struct {
 	// Use io.MultiWriter to fan out (e.g. an in-memory buffer plus a
 	// sidecar log file). Nil leaves cmd.Stderr unset, which os/exec
 	// routes to os.DevNull.
+	//
+	// When Supervisor is non-nil, the runner wraps cfg.Stderr with an
+	// activity tap so byte-level stderr writes count as supervisor
+	// activity. The wrap is transparent to the caller (writes flow
+	// through; bytes are unchanged).
 	Stderr io.Writer
 
 	// ExtraFiles is the additional set of open files to be inherited by
@@ -58,6 +64,18 @@ type Config struct {
 	// and SIGKILL. Zero falls through to provider.DefaultWaitDelay.
 	WaitDelay time.Duration
 
+	// Supervisor, when non-nil, enables process supervision: idle-kill,
+	// restart-on-crash, and watchdog. See SupervisorOptions. Nil
+	// preserves go-runner's default "spawn once, run to completion"
+	// behavior. Added in v0.3.0.
+	Supervisor *SupervisorOptions
+
+	// ResourceLimits applies OS-level resource caps to the spawned
+	// process via sh -c ulimit wrapping (both platforms) and / or
+	// systemd-run --user --scope (Linux when systemd is available).
+	// Zero value disables limits. See ResourceLimits. Added in v0.3.0.
+	ResourceLimits ResourceLimits
+
 	// OnEvent receives each runner Event synchronously from the spawn
 	// goroutine. Required.
 	OnEvent func(Event)
@@ -65,13 +83,18 @@ type Config struct {
 
 // Run spawns cfg.Provider's binary under cfg.Profile, streams its stdout
 // through the adapter, and emits runner Events via cfg.OnEvent until the
-// process exits or the context is cancelled. Run returns the wait error
-// (nil on clean exit) plus any sandbox-apply or pipe-setup error. Setup
-// and validation failures (missing required Config fields, provider
-// Detect failure, stdout-pipe error, sandbox.Apply error, cmd.Start
-// error) return before any Events are emitted; once the process has
-// successfully started, the terminal Event (process.exited or
-// process.timeout) is always emitted before Run returns.
+// process exits or the context is cancelled.
+//
+// Default behavior (cfg.Supervisor == nil): one spawn, run to completion,
+// return. When cfg.Supervisor is non-nil, Run drives a supervision loop
+// — idle-kill / watchdog observation and up to RestartOnCrash restart
+// attempts on non-zero exit.
+//
+// Returns nil on clean exit. On non-clean exit returns an *ExitError
+// (extractable via errors.As) carrying structured Code / Signal /
+// Killed / Cause. Setup and validation failures (missing required
+// Config fields, provider Detect failure, sandbox.Apply error,
+// cmd.Start error) return before any Events are emitted.
 func Run(ctx context.Context, cfg Config) error {
 	if cfg.Provider == nil {
 		return errors.New("runner: Config.Provider is required")
@@ -83,6 +106,16 @@ func Run(ctx context.Context, cfg Config) error {
 		return errors.New("runner: Config.Workspace is required")
 	}
 
+	if cfg.Supervisor != nil {
+		return runSupervised(ctx, cfg)
+	}
+	return runOnce(ctx, cfg)
+}
+
+// runOnce executes a single subprocess lifetime: detect → spawn →
+// stream → wait. When cfg.Supervisor is non-nil, idle-kill / watchdog
+// goroutines are started after spawn and torn down after wait.
+func runOnce(ctx context.Context, cfg Config) error {
 	binPath, ok := cfg.Provider.Detect()
 	if !ok {
 		return fmt.Errorf("runner: provider %q binary not found", cfg.Provider.Name())
@@ -97,11 +130,23 @@ func Run(ctx context.Context, cfg Config) error {
 	if cfg.Env != nil {
 		cmd.Env = cfg.Env
 	}
-	if cfg.Stderr != nil {
-		cmd.Stderr = cfg.Stderr
-	}
 	if len(cfg.ExtraFiles) > 0 {
 		cmd.ExtraFiles = cfg.ExtraFiles
+	}
+
+	// Activity tracking: wire stderr tap (and tick from stdout scanner
+	// below) so supervisor goroutines can observe I/O activity.
+	var activity *activityTracker
+	state := &supState{}
+	if cfg.Supervisor != nil {
+		activity = &activityTracker{}
+		cmd.Stderr = installActivityTap(cfg.Stderr, activity)
+		// Populate caller-facing ActivityCallback. Reads of this field
+		// from caller's OnEvent will see the live trampoline by the
+		// time the first event fires (Start happens-before OnEvent).
+		cfg.Supervisor.ActivityCallback = activity.tick
+	} else if cfg.Stderr != nil {
+		cmd.Stderr = cfg.Stderr
 	}
 
 	stdout, err := cmd.StdoutPipe()
@@ -119,6 +164,15 @@ func Run(ctx context.Context, cfg Config) error {
 	}
 	defer cleanup()
 
+	// Resource limits wrap is applied AFTER sandbox so the rlimit-
+	// setting shell exec's into the sandbox helper which exec's into
+	// the real binary; rlimits propagate down the chain.
+	limitCleanup, err := applyResourceLimits(cmd, cfg.ResourceLimits)
+	if err != nil {
+		return fmt.Errorf("runner: apply resource limits: %w", err)
+	}
+	defer limitCleanup()
+
 	cmd.Cancel = func() error {
 		if cmd.Process == nil {
 			return nil
@@ -130,10 +184,11 @@ func Run(ctx context.Context, cfg Config) error {
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("runner: start: %w", err)
 	}
+	startedAt := time.Now()
 
 	cfg.OnEvent(Event{
 		Kind: EventProcessStarted,
-		At:   time.Now(),
+		At:   startedAt,
 		Payload: map[string]any{
 			"pid":    cmd.Process.Pid,
 			"binary": cmd.Path,
@@ -141,9 +196,30 @@ func Run(ctx context.Context, cfg Config) error {
 		},
 	})
 
-	streamProviderEvents(stdout, cfg)
+	procDone := make(chan struct{})
+	var supWG sync.WaitGroup
+	if cfg.Supervisor != nil {
+		if cfg.Supervisor.IdleKill > 0 {
+			supWG.Add(1)
+			go func() {
+				defer supWG.Done()
+				superviseIdle(cfg, cmd, activity, state, startedAt, procDone)
+			}()
+		}
+		if cfg.Supervisor.WatchdogTimeout > 0 {
+			supWG.Add(1)
+			go func() {
+				defer supWG.Done()
+				superviseWatchdog(cfg, cmd, activity, state, startedAt, procDone)
+			}()
+		}
+	}
+
+	streamProviderEvents(stdout, cfg, activity)
 
 	waitErr := cmd.Wait()
+	close(procDone)
+	supWG.Wait()
 
 	switch {
 	case errors.Is(ctx.Err(), context.DeadlineExceeded):
@@ -154,7 +230,7 @@ func Run(ctx context.Context, cfg Config) error {
 		})
 		return waitErr
 	default:
-		xe := buildExitError(cmd.ProcessState, waitErr, "")
+		xe := buildExitError(cmd.ProcessState, waitErr, state.getCause())
 		errText := ""
 		if waitErr != nil {
 			errText = waitErr.Error()
@@ -222,7 +298,12 @@ func buildExitError(ps *os.ProcessState, waitErr error, cause string) *ExitError
 // adapter, and emits one EventProviderEvent per parsed StreamEvent. Parse
 // errors are silently dropped to match go-providers' bridge behavior; the
 // adapter is the authority on what counts as a parseable line.
-func streamProviderEvents(stdout io.ReadCloser, cfg Config) {
+//
+// When activity is non-nil (supervision active), every stdout line ticks
+// the activity tracker, regardless of whether the adapter parsed it. This
+// is the fallback signal used when the caller does not invoke the
+// supervisor's ActivityCallback.
+func streamProviderEvents(stdout io.ReadCloser, cfg Config, activity *activityTracker) {
 	defer stdout.Close()
 
 	scanner := bufio.NewScanner(stdout)
@@ -230,6 +311,9 @@ func streamProviderEvents(stdout io.ReadCloser, cfg Config) {
 
 	for scanner.Scan() {
 		line := scanner.Bytes()
+		if activity != nil {
+			activity.tick()
+		}
 		if len(line) == 0 {
 			continue
 		}
