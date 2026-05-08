@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -241,6 +243,203 @@ func TestRun_Stderr_NilLeavesCmdStderrUnset(t *testing.T) {
 	}
 	if err := runner.Run(context.Background(), cfg); err != nil {
 		t.Fatalf("Run with nil Stderr: %v", err)
+	}
+}
+
+func TestRun_ExitError_NonZeroExit(t *testing.T) {
+	bin := buildStubCLI(t)
+	workspace := t.TempDir()
+
+	var (
+		mu       sync.Mutex
+		exitedEv runner.Event
+	)
+	cfg := runner.Config{
+		Provider:  &stubAdapter{binPath: bin},
+		Workspace: workspace,
+		Args:      []string{"-count", "1", "-fail"},
+		OnEvent: func(ev runner.Event) {
+			if ev.Kind != runner.EventProcessExited {
+				return
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			exitedEv = ev
+		},
+	}
+
+	err := runner.Run(context.Background(), cfg)
+	if err == nil {
+		t.Fatal("expected error for -fail (exit 2)")
+	}
+
+	var xe *runner.ExitError
+	if !errors.As(err, &xe) {
+		t.Fatalf("error is not *ExitError: %T %v", err, err)
+	}
+	if xe.Code != 2 {
+		t.Errorf("ExitError.Code = %d, want 2", xe.Code)
+	}
+	if xe.Signal != 0 {
+		t.Errorf("ExitError.Signal = %d, want 0 (clean non-zero exit)", xe.Signal)
+	}
+	if xe.Killed {
+		t.Error("ExitError.Killed = true, want false (non-signal exit)")
+	}
+	if xe.Cause != "" {
+		t.Errorf("ExitError.Cause = %q, want \"\" (no supervisor cause)", xe.Cause)
+	}
+	if xe.ProcessState == nil {
+		t.Error("ExitError.ProcessState is nil")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if got, _ := exitedEv.Payload["exit_code"].(int); got != 2 {
+		t.Errorf("EventProcessExited payload exit_code = %v, want 2", exitedEv.Payload["exit_code"])
+	}
+	if got, _ := exitedEv.Payload["signal"].(int); got != 0 {
+		t.Errorf("EventProcessExited payload signal = %v, want 0", exitedEv.Payload["signal"])
+	}
+	if got, _ := exitedEv.Payload["killed"].(bool); got {
+		t.Error("EventProcessExited payload killed = true, want false")
+	}
+	if got, _ := exitedEv.Payload["cause"].(string); got != "" {
+		t.Errorf("EventProcessExited payload cause = %q, want \"\"", got)
+	}
+}
+
+func TestRun_ExitError_CleanExit_ReturnsNil(t *testing.T) {
+	bin := buildStubCLI(t)
+	workspace := t.TempDir()
+	cfg := runner.Config{
+		Provider:  &stubAdapter{binPath: bin},
+		Workspace: workspace,
+		Args:      []string{"-count", "1"},
+		OnEvent:   func(runner.Event) {},
+	}
+	err := runner.Run(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("clean exit returned error: %v", err)
+	}
+}
+
+func TestRun_ExitError_SIGTERM_FromContextCancel(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("posix signals only")
+	}
+	bin := buildStubCLI(t)
+	workspace := t.TempDir()
+
+	// stubcli with -sleep 30s; we cancel ctx ~immediately; cmd.Cancel
+	// delivers SIGTERM which Go's runtime translates into orderly exit
+	// (signal terminates the program). ExitError should reflect Signal=15,
+	// Killed=false (SIGTERM != SIGKILL).
+	startedCh := make(chan struct{}, 1)
+	cfg := runner.Config{
+		Provider:  &stubAdapter{binPath: bin},
+		Workspace: workspace,
+		Args:      []string{"-count", "1", "-sleep", "30s"},
+		WaitDelay: 5 * time.Second,
+		OnEvent: func(ev runner.Event) {
+			if ev.Kind == runner.EventProcessStarted {
+				select {
+				case startedCh <- struct{}{}:
+				default:
+				}
+			}
+		},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	type result struct{ err error }
+	done := make(chan result, 1)
+	go func() { done <- result{err: runner.Run(ctx, cfg)} }()
+
+	select {
+	case <-startedCh:
+	case <-time.After(5 * time.Second):
+		cancel()
+		t.Fatal("process did not start within 5s")
+	}
+
+	cancel()
+	res := <-done
+
+	if res.err == nil {
+		t.Fatal("expected non-nil error after SIGTERM")
+	}
+	var xe *runner.ExitError
+	if !errors.As(res.err, &xe) {
+		t.Fatalf("error is not *ExitError: %T %v", res.err, res.err)
+	}
+	if xe.Signal != int(syscall.SIGTERM) {
+		t.Errorf("ExitError.Signal = %d, want %d (SIGTERM)", xe.Signal, syscall.SIGTERM)
+	}
+	if xe.Killed {
+		t.Errorf("ExitError.Killed = true, want false (SIGTERM is not SIGKILL)")
+	}
+}
+
+func TestRun_ExitError_SIGKILL_AfterWaitDelay(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("posix signals only")
+	}
+	bin := buildStubCLI(t)
+	workspace := t.TempDir()
+
+	// stubcli with -trap-sigterm swallows SIGTERM; cmd.WaitDelay then
+	// elapses and os/exec sends SIGKILL. ExitError should reflect
+	// Signal=9, Killed=true.
+	startedCh := make(chan struct{}, 1)
+	cfg := runner.Config{
+		Provider:  &stubAdapter{binPath: bin},
+		Workspace: workspace,
+		Args:      []string{"-count", "1", "-sleep", "30s", "-trap-sigterm"},
+		WaitDelay: 500 * time.Millisecond,
+		OnEvent: func(ev runner.Event) {
+			if ev.Kind == runner.EventProcessStarted {
+				select {
+				case startedCh <- struct{}{}:
+				default:
+				}
+			}
+		},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	type result struct{ err error }
+	done := make(chan result, 1)
+	go func() { done <- result{err: runner.Run(ctx, cfg)} }()
+
+	select {
+	case <-startedCh:
+	case <-time.After(5 * time.Second):
+		cancel()
+		t.Fatal("process did not start within 5s")
+	}
+	// Give the trap a moment to install.
+	time.Sleep(200 * time.Millisecond)
+
+	cancel()
+	res := <-done
+
+	if res.err == nil {
+		t.Fatal("expected non-nil error after SIGKILL")
+	}
+	var xe *runner.ExitError
+	if !errors.As(res.err, &xe) {
+		t.Fatalf("error is not *ExitError: %T %v", res.err, res.err)
+	}
+	if xe.Signal != int(syscall.SIGKILL) {
+		t.Errorf("ExitError.Signal = %d, want %d (SIGKILL)", xe.Signal, syscall.SIGKILL)
+	}
+	if !xe.Killed {
+		t.Error("ExitError.Killed = false, want true (terminated by SIGKILL)")
 	}
 }
 

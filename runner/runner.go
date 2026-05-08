@@ -152,29 +152,70 @@ func Run(ctx context.Context, cfg Config) error {
 			At:      time.Now(),
 			Payload: map[string]any{"error": ctx.Err().Error()},
 		})
+		return waitErr
 	default:
-		exitCode := -1
+		xe := buildExitError(cmd.ProcessState, waitErr, "")
 		errText := ""
 		if waitErr != nil {
 			errText = waitErr.Error()
-			var ee *exec.ExitError
-			if errors.As(waitErr, &ee) {
-				exitCode = ee.ExitCode()
-			}
+		}
+		payload := map[string]any{
+			"exit_code": -1,
+			"signal":    0,
+			"killed":    false,
+			"cause":     "",
+			"error":     errText,
+		}
+		if xe != nil {
+			payload["exit_code"] = xe.Code
+			payload["signal"] = xe.Signal
+			payload["killed"] = xe.Killed
+			payload["cause"] = xe.Cause
 		} else {
-			exitCode = 0
+			payload["exit_code"] = 0
 		}
 		cfg.OnEvent(Event{
-			Kind: EventProcessExited,
-			At:   time.Now(),
-			Payload: map[string]any{
-				"exit_code": exitCode,
-				"error":     errText,
-			},
+			Kind:    EventProcessExited,
+			At:      time.Now(),
+			Payload: payload,
 		})
+		if xe != nil {
+			return xe
+		}
+		return waitErr
 	}
+}
 
-	return waitErr
+// buildExitError translates the (ProcessState, waitErr) pair returned by
+// cmd.Wait into a structured *ExitError, or nil for clean exits. cause
+// is set by the supervisor / resource-limits subsystems when they
+// triggered the termination directly; pass empty string for ordinary
+// exits.
+func buildExitError(ps *os.ProcessState, waitErr error, cause string) *ExitError {
+	if waitErr == nil {
+		return nil
+	}
+	xe := &ExitError{
+		Code:         -1,
+		ProcessState: ps,
+		Cause:        cause,
+		waitErr:      waitErr,
+	}
+	if ps != nil {
+		xe.Code = ps.ExitCode()
+		if ws, ok := ps.Sys().(syscall.WaitStatus); ok {
+			if ws.Signaled() {
+				sig := int(ws.Signal())
+				xe.Signal = sig
+				xe.Killed = ws.Signal() == syscall.SIGKILL
+			}
+		}
+	}
+	var ee *exec.ExitError
+	if xe.Code == -1 && errors.As(waitErr, &ee) {
+		xe.Code = ee.ExitCode()
+	}
+	return xe
 }
 
 // streamProviderEvents reads stdout line-by-line, runs each line through the
