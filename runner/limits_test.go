@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hollis-labs/go-providers/provider"
+	llmtypes "github.com/hollis-labs/go-llm-types"
 	"github.com/hollis-labs/go-runner/runner"
 )
 
@@ -51,8 +51,8 @@ func TestResourceLimits_RlimitsApplied(t *testing.T) {
 			if ev.Kind != runner.EventProviderEvent {
 				return
 			}
-			se, ok := ev.Payload["event"].(provider.StreamEvent)
-			if !ok || se.Type != provider.EventDelta {
+			se, ok := ev.Payload["event"].(llmtypes.StreamEvent)
+			if !ok || se.Type != llmtypes.EventDelta {
 				return
 			}
 			mu.Lock()
@@ -138,7 +138,6 @@ while :; do : $((1+1)); done
 		t.Errorf("Run took %v, expected <8s with CPUTime=1s", elapsed)
 	}
 }
-
 
 // TestResourceLimits_MemoryMax_Linux verifies cgroup-based MemoryMax
 // enforcement when systemd-run --user is available. Skips on darwin

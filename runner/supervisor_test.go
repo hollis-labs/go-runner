@@ -20,9 +20,9 @@ func TestSupervisor_IdleKill(t *testing.T) {
 	workspace := t.TempDir()
 
 	var (
-		mu             sync.Mutex
-		sawIdleKill    bool
-		exitedPayload  map[string]any
+		mu            sync.Mutex
+		sawIdleKill   bool
+		exitedPayload map[string]any
 	)
 
 	cfg := runner.Config{

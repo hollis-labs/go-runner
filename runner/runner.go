@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	llmtypes "github.com/hollis-labs/go-llm-types"
 	"github.com/hollis-labs/go-providers/provider"
 	"github.com/hollis-labs/go-sandbox/sandbox"
 )
@@ -327,7 +328,7 @@ func streamProviderEvents(stdout io.ReadCloser, cfg Config, activity *activityTr
 				At:   time.Now(),
 				Payload: map[string]any{
 					"event":            ev,
-					"is_turn_complete": provider.IsTurnComplete(ev),
+					"is_turn_complete": llmtypes.IsTurnComplete(ev),
 				},
 			})
 		}

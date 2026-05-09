@@ -315,4 +315,3 @@ func runSupervised(ctx context.Context, cfg Config) error {
 	}
 	return lastErr
 }
-

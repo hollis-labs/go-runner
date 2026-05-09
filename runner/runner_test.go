@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hollis-labs/go-providers/provider"
+	llmtypes "github.com/hollis-labs/go-llm-types"
 	"github.com/hollis-labs/go-runner/runner"
 	"github.com/hollis-labs/go-sandbox/sandbox"
 )
@@ -29,7 +29,7 @@ func (s *stubAdapter) Name() string                      { return "stub" }
 func (s *stubAdapter) BuildArgs(_, _, _ string) []string { return nil }
 func (s *stubAdapter) Detect() (string, bool)            { return s.binPath, true }
 
-func (s *stubAdapter) ParseLine(line []byte) ([]provider.StreamEvent, error) {
+func (s *stubAdapter) ParseLine(line []byte) ([]llmtypes.StreamEvent, error) {
 	var raw struct {
 		Type    string `json:"type"`
 		Content string `json:"content"`
@@ -39,9 +39,9 @@ func (s *stubAdapter) ParseLine(line []byte) ([]provider.StreamEvent, error) {
 	}
 	switch raw.Type {
 	case "delta":
-		return []provider.StreamEvent{{Type: provider.EventDelta, Content: raw.Content}}, nil
+		return []llmtypes.StreamEvent{{Type: llmtypes.EventDelta, Content: raw.Content}}, nil
 	case "done":
-		return []provider.StreamEvent{{Type: provider.EventDone}}, nil
+		return []llmtypes.StreamEvent{{Type: llmtypes.EventDone}}, nil
 	}
 	return nil, nil
 }
@@ -134,14 +134,14 @@ func TestRun_E2E_StubCLIUnderSandbox(t *testing.T) {
 		if ev.Kind != runner.EventProviderEvent {
 			continue
 		}
-		se, ok := ev.Payload["event"].(provider.StreamEvent)
+		se, ok := ev.Payload["event"].(llmtypes.StreamEvent)
 		if !ok {
 			t.Fatalf("provider.event payload missing event: %+v", ev.Payload)
 		}
 		switch se.Type {
-		case provider.EventDelta:
+		case llmtypes.EventDelta:
 			deltas++
-		case provider.EventDone:
+		case llmtypes.EventDone:
 			sawTerminal = true
 			terminalIndex = i
 			if !ev.Payload["is_turn_complete"].(bool) {
@@ -499,11 +499,11 @@ printf '{"type":"done"}\n'
 		if ev.Kind != runner.EventProviderEvent {
 			continue
 		}
-		se, ok := ev.Payload["event"].(provider.StreamEvent)
+		se, ok := ev.Payload["event"].(llmtypes.StreamEvent)
 		if !ok {
 			continue
 		}
-		if se.Type == provider.EventDelta {
+		if se.Type == llmtypes.EventDelta {
 			gotDelta = se.Content
 			break
 		}

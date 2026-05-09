@@ -3,6 +3,46 @@
 All notable changes to `go-runner` are documented in this file. Per-release
 notes are also published as GitHub Releases.
 
+## v0.4.0 — 2026-05-09
+
+Tier-1 feature release combining the supervision / resource-limits /
+ExitError surface (originally written under the v0.3.0 entry but never
+shipped — the v0.3.0 tag was cut on `main` before the feat branch
+landed) with `go-providers` v0.12.0 compatibility.
+
+### go-providers v0.12.0 compat (consumer-side migration)
+
+- Bumped `github.com/hollis-labs/go-providers` from v0.5.0 to v0.12.0.
+- Added `github.com/hollis-labs/go-llm-types` v0.1.0.
+- Migrated removed-alias references in `runner/`:
+  `provider.IsTurnComplete` → `llmtypes.IsTurnComplete`,
+  `provider.StreamEvent` → `llmtypes.StreamEvent`,
+  `provider.EventDelta` / `EventDone` → `llmtypes.EventDelta` / `EventDone`.
+- `provider.CLIAdapter`, `provider.WithWaitDelay`, and
+  `provider.WaitDelayFromContext` continue to live in `go-providers`
+  (CLI/PTY/subprocess surface) and are unchanged.
+
+### Public API
+
+No exported `runner` symbols changed signature in the migration. The
+runner's `Config.Provider` field remains `provider.CLIAdapter`; the
+adapter interface itself now returns `[]llmtypes.StreamEvent` from
+`ParseLine` (per `go-providers` v0.12.0). Consumers that pass adapters
+constructed from `go-providers` (the production case) get this
+transparently. Consumers that implement their own `CLIAdapter` need to
+update their `ParseLine` return type to `[]llmtypes.StreamEvent`.
+
+### Verification
+
+- darwin host: `go vet ./...`, `go build ./...`,
+  `go test -race -count=1 ./...` — green.
+
+### Origin
+
+Migration session: `agent-workspaces/execution/portfolio/2026-05-09-go-providers-v0.12.0-compat/`.
+Driven by SP-20260508-0001 Path B sweep (nanite commit `00f0f9e`)
+which dropped the transitional aliases in `go-providers` v0.12.0.
+
 ## v0.3.0 — 2026-05-08
 
 Adds structured exit info, opt-in process supervision, and OS-native
