@@ -3,12 +3,40 @@
 All notable changes to `go-runner` are documented in this file. Per-release
 notes are also published as GitHub Releases.
 
+## v0.5.0 — 2026-05-10
+
+Public-release prep. No exported `runner` API changes; existing
+consumers can upgrade transparently.
+
+### Added
+
+- `examples/basic` — runnable demo wiring the Claude CLI adapter
+  (`provider.NewClaudeAdapter`) into `runner.Run` and pretty-printing
+  every event. Run via `go run ./examples/basic -prompt "..."`.
+- `examples/env-passthrough` — demonstrates `Config.Env` semantics
+  (nil inherit, empty slice, explicit slice) via a minimal inline
+  `CLIAdapter` over `/usr/bin/env`. Doubles as a template for adapting
+  non-LLM line-delimited CLIs.
+
+### Documentation
+
+- README gains an Examples section linking the two new programs.
+- CHANGELOG narrative scrubbed for public consumption (internal
+  workspace paths and ticket IDs removed; technical content
+  preserved).
+
+### Verification
+
+- darwin host: `gofmt -l .` clean; `go vet ./...`, `go build ./...`,
+  `go test -race -count=1 -timeout 180s ./...` — green.
+- `go mod tidy` is a no-op (modules already minimal).
+
 ## v0.4.0 — 2026-05-09
 
-Tier-1 feature release combining the supervision / resource-limits /
-ExitError surface (originally written under the v0.3.0 entry but never
-shipped — the v0.3.0 tag was cut on `main` before the feat branch
-landed) with `go-providers` v0.12.0 compatibility.
+Combines the supervision / resource-limits / ExitError surface
+(originally written under the v0.3.0 entry but never shipped — the
+v0.3.0 tag was cut on `main` before the feature branch landed) with
+`go-providers` v0.12.0 compatibility.
 
 ### go-providers v0.12.0 compat (consumer-side migration)
 
@@ -37,21 +65,13 @@ update their `ParseLine` return type to `[]llmtypes.StreamEvent`.
 - darwin host: `go vet ./...`, `go build ./...`,
   `go test -race -count=1 ./...` — green.
 
-### Origin
-
-Migration session: `agent-workspaces/execution/portfolio/2026-05-09-go-providers-v0.12.0-compat/`.
-Driven by SP-20260508-0001 Path B sweep (nanite commit `00f0f9e`)
-which dropped the transitional aliases in `go-providers` v0.12.0.
-
 ## v0.3.0 — 2026-05-08
 
 Adds structured exit info, opt-in process supervision, and OS-native
-resource limits. Foundation Tier-1 work for the portfolio agent-boot
-unification (cross-app design at
-`agent-workspaces/planning/agent-boot-unification/2026-05-07-cross-app-design.md`).
-The recovery-broker pattern in nanite consumes `ExitError.Cause` to
-classify failures cleanly; mux and clockwork-manifold get supervision
-and resource enforcement they were each rolling app-side.
+resource limits. Pulls process-lifetime policy (idle-kill, watchdog,
+restart, OS-level rlimits) into the lib so apps don't each roll their
+own; app vocabulary (FSM transitions, broker events, plugin lifecycle)
+still lives in wrappers.
 
 ### Public API additions
 
@@ -118,20 +138,11 @@ and resource enforcement they were each rolling app-side.
   test `TestResourceLimits_MemoryMax_Linux` skips when systemd-run
   --user is unavailable.
 
-### Origin
-
-Tier-1 foundation work surfaced during the portfolio agent-boot
-unification (clockwork S2.5 smoke gap analysis, 2026-05-07). Tracking
-prompt at
-`agent-workspaces/execution/go-runner/2026-05-08/implementer-prompt.md`.
-
 ## v0.2.0 — 2026-04-27
 
-Adds caller-controlled stderr capture. Filed in clockwork as
-`CW-20260427-0044`; consumed by clockwork-manifold's wrapper-driven
-executor (`CW-20260427-0040`) to preserve the per-run stderr sidecar log
-that clockwork's existing `attachStderrCapture` writes to
-`$CLOCKWORK_DATA_DIR/runs/<run_id>.stderr.log`.
+Adds caller-controlled stderr capture so wrapper-driven executors can
+fan stderr out to per-run sidecar logs without the runner taking an
+opinion on aggregation or routing.
 
 ### Public API additions
 
@@ -156,11 +167,6 @@ that clockwork's existing `attachStderrCapture` writes to
 - darwin host: `go build ./...`, `go vet ./...`, `go test -race -timeout 60s ./...` — 7 PASS
 - linux cross-compile: `GOOS=linux go build ./...`, `go vet ./...` — ok
 
-### Origin
-
-Clockwork ticket `CW-20260427-0044` under epic `EP-20260427-0001`
-(clockwork-side adoption of CLI substrate libs + signal-protocol redesign).
-
 ## v0.1.0 — 2026-04-27
 
 Initial release. Thin substrate that composes
@@ -169,7 +175,7 @@ grace-period spawner) and
 [`go-sandbox`](https://github.com/hollis-labs/go-sandbox) (Profile + Apply)
 into a single `Run` entry point. Emits raw process-lifecycle and
 provider-stream events via callback; apps translate to their own vocabulary
-in their own wrapper layer (no Hollis Labs opinions in the lib).
+in their own wrapper layer — no app-specific opinions in the lib.
 
 ### Public API
 
@@ -226,8 +232,4 @@ plugin lifecycle) — none in the package.
 - linux cross-compile: `GOOS=linux go build ./...`, `go vet ./...` — ok
 - Live linux run with `bwrap` installed is a known follow-up.
 
-### Origin
-
-Clockwork ticket `CW-20260427-0023` under epic `EP-20260426-0002` (CLI
-substrate libraries — go-providers / go-sandbox / go-runner). Initial PR
-[#1](https://github.com/hollis-labs/go-runner/pull/1).
+Initial PR: [#1](https://github.com/hollis-labs/go-runner/pull/1).
