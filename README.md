@@ -174,6 +174,33 @@ Note: Go's runtime swallows `SIGXCPU` on at least darwin — Go binaries
 configured with `CPUTime` may not terminate at the soft limit. Native
 C-based binaries (sh, yes, dd, claude, codex) honor `SIGXCPU` normally.
 
+## Examples
+
+Two runnable examples ship under `examples/`:
+
+- **`examples/basic`** — spawn the Claude CLI under the runner with no
+  sandbox and no supervision; print every event to stdout. Requires
+  `claude` on `$PATH`.
+
+  ```sh
+  go run ./examples/basic -prompt "explain quicksort in one sentence"
+  ```
+
+- **`examples/env-passthrough`** — demonstrate `Config.Env` semantics
+  (nil = inherit parent env; `[]string{}` = empty env; explicit slice =
+  exactly those entries). Spawns `/usr/bin/env` through a minimal
+  `CLIAdapter` so you can see what the child process actually sees.
+
+  ```sh
+  RUNNER_DEMO_INHERITED=from-parent go run ./examples/env-passthrough -mode inherit
+  go run ./examples/env-passthrough -mode empty
+  go run ./examples/env-passthrough -mode custom
+  ```
+
+  The minimal `echoAdapter` in this example is also a useful template
+  for adapting non-LLM line-delimited CLIs without pulling in a full
+  provider package.
+
 ## Composition
 
 - **Spawn / grace-period.** `runner.Run` builds an `*exec.Cmd`, sets
