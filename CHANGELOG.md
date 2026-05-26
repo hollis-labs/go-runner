@@ -3,6 +3,33 @@
 All notable changes to `go-runner` are documented in this file. Per-release
 notes are also published as GitHub Releases.
 
+## v0.6.0 — 2026-05-26
+
+Dependency bump. No exported `runner` API changes; existing consumers can
+upgrade transparently. Unblocks the `agentkit` module merge by aligning
+`go-runner` with the same `go-providers` / `go-llm-types` / `go-sandbox`
+versions `agentkit` already pins.
+
+### Dependency bumps
+
+- `github.com/hollis-labs/go-providers` v0.12.0 → v0.23.0
+- `github.com/hollis-labs/go-llm-types` v0.1.0 → v0.3.0
+- `github.com/hollis-labs/go-llm-contracts` v0.1.0 → v0.3.0 (indirect)
+- `github.com/hollis-labs/go-sandbox` v0.1.0 → v0.2.1
+
+### Public API
+
+No exported `runner` symbols changed signature. The `CLIAdapter` interface
+(`Detect`, `Name`, `ParseLine`) is unchanged between go-providers v0.12.0
+and v0.23.0. `llmtypes.IsTurnComplete`, `provider.WithWaitDelay`,
+`provider.WaitDelayFromContext`, and `provider.DefaultWaitDelay` are all
+unchanged. No source edits in `runner/` were required.
+
+### Verification
+
+- darwin host: `go mod tidy` (no-op), `go vet ./...`, `go build ./...`,
+  `go test -race -count=1 -timeout 180s ./...` — green.
+
 ## v0.5.0 — 2026-05-10
 
 Public-release prep. No exported `runner` API changes; existing
