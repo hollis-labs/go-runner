@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -18,20 +19,29 @@ import (
 )
 
 // Config configures a single Run. Provider, Workspace, and OnEvent are
-// required; Profile is optional (zero-value skips sandbox wrapping). Args
-// are the raw CLI argv (the runner does not call adapter.BuildArgs — that
-// is the wrapper's job). Env defaults to the parent process environment
-// when nil; an explicit empty slice yields an empty environment.
+// required. SandboxPolicy is the preferred resolved go-sandbox access policy;
+// Profile is the legacy compatibility adapter. Args are the raw CLI argv (the
+// runner does not call adapter.BuildArgs — that is the wrapper's job). Env
+// defaults to the parent process environment when nil; an explicit empty slice
+// yields an empty environment.
 type Config struct {
 	// Provider is consulted for binary detection and per-line parsing.
 	Provider provider.CLIAdapter
 
-	// Profile is the sandbox profile to apply. The zero value (empty ID)
-	// disables sandboxing — the cmd is spawned without sandbox-exec/bwrap.
+	// SandboxPolicy is an already-resolved go-sandbox access policy to apply
+	// before every child Start. When non-nil, the policy ID must be non-empty.
+	// Required policy setup errors prevent Start. A policy with
+	// ConfinementDisabled is reported as disabled and starts unwrapped.
+	SandboxPolicy *sandbox.ResolvedAccessPolicy
+
+	// Profile is the legacy sandbox profile to apply. The zero value (empty ID)
+	// disables legacy sandbox wrapping. Legacy profiles are default-allow
+	// compatibility policies; new callers should prefer SandboxPolicy.
 	Profile sandbox.Profile
 
-	// Workspace is the absolute path used as the cmd working directory and
-	// passed to sandbox.Apply when Profile is non-zero.
+	// Workspace is the absolute path used as the cmd working directory. Legacy
+	// Profile callers also pass it to sandbox.Apply. Resolved SandboxPolicy
+	// callers should set Roots.CWD independently when cwd differs from Project.
 	Workspace string
 
 	// Args is the CLI argv (after the binary). Pass adapter.BuildArgs(...)
@@ -82,20 +92,21 @@ type Config struct {
 	OnEvent func(Event)
 }
 
-// Run spawns cfg.Provider's binary under cfg.Profile, streams its stdout
-// through the adapter, and emits runner Events via cfg.OnEvent until the
-// process exits or the context is cancelled.
+// Run spawns cfg.Provider's binary under cfg.SandboxPolicy or cfg.Profile,
+// streams its stdout through the adapter, and emits runner Events via
+// cfg.OnEvent until the process exits or the context is cancelled.
 //
 // Default behavior (cfg.Supervisor == nil): one spawn, run to completion,
 // return. When cfg.Supervisor is non-nil, Run drives a supervision loop
 // — idle-kill / watchdog observation and up to RestartOnCrash restart
-// attempts on non-zero exit.
+// attempts on non-zero exit. The same sandbox setup is repeated before
+// every restart Start.
 //
 // Returns nil on clean exit. On non-clean exit returns an *ExitError
 // (extractable via errors.As) carrying structured Code / Signal /
 // Killed / Cause. Setup and validation failures (missing required
-// Config fields, provider Detect failure, sandbox.Apply error,
-// cmd.Start error) return before any Events are emitted.
+// Config fields, provider Detect failure, sandbox setup error,
+// cmd.Start error) return before process lifecycle Events are emitted.
 func Run(ctx context.Context, cfg Config) error {
 	if cfg.Provider == nil {
 		return errors.New("runner: Config.Provider is required")
@@ -105,6 +116,12 @@ func Run(ctx context.Context, cfg Config) error {
 	}
 	if cfg.Workspace == "" {
 		return errors.New("runner: Config.Workspace is required")
+	}
+	if cfg.SandboxPolicy != nil && cfg.Profile.ID != "" {
+		return errors.New("runner: Config.SandboxPolicy and Config.Profile are mutually exclusive")
+	}
+	if cfg.SandboxPolicy != nil && cfg.SandboxPolicy.ID == "" {
+		return errors.New("runner: Config.SandboxPolicy.ID is required")
 	}
 
 	if cfg.Supervisor != nil {
@@ -155,15 +172,11 @@ func runOnce(ctx context.Context, cfg Config) error {
 		return fmt.Errorf("runner: stdout pipe: %w", err)
 	}
 
-	cleanup := func() {}
-	if cfg.Profile.ID != "" {
-		c, err := sandbox.Apply(cmd, cfg.Profile, cfg.Workspace)
-		if err != nil {
-			return fmt.Errorf("runner: sandbox apply: %w", err)
-		}
-		cleanup = c
+	sandboxResult, sandboxCleanup, err := prepareSandbox(cmd, cfg)
+	if err != nil {
+		return err
 	}
-	defer cleanup()
+	defer sandboxCleanup()
 
 	// Resource limits wrap is applied AFTER sandbox so the rlimit-
 	// setting shell exec's into the sandbox helper which exec's into
@@ -183,17 +196,19 @@ func runOnce(ctx context.Context, cfg Config) error {
 	cmd.WaitDelay = provider.WaitDelayFromContext(ctx)
 
 	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("runner: start: %w", err)
+		return &StartError{Outcome: sandboxResult.Configured(), Err: fmt.Errorf("runner: start: %w", err)}
 	}
 	startedAt := time.Now()
+	launchedSandbox := sandboxResult.Launched()
 
 	cfg.OnEvent(Event{
 		Kind: EventProcessStarted,
 		At:   startedAt,
 		Payload: map[string]any{
-			"pid":    cmd.Process.Pid,
-			"binary": cmd.Path,
-			"args":   append([]string(nil), cmd.Args...),
+			"pid":     cmd.Process.Pid,
+			"binary":  cmd.Path,
+			"args":    append([]string(nil), cmd.Args...),
+			"sandbox": launchedSandbox,
 		},
 	})
 
@@ -227,7 +242,7 @@ func runOnce(ctx context.Context, cfg Config) error {
 		cfg.OnEvent(Event{
 			Kind:    EventProcessTimeout,
 			At:      time.Now(),
-			Payload: map[string]any{"error": ctx.Err().Error()},
+			Payload: map[string]any{"error": ctx.Err().Error(), "sandbox": launchedSandbox},
 		})
 		return waitErr
 	default:
@@ -242,6 +257,7 @@ func runOnce(ctx context.Context, cfg Config) error {
 			"killed":    false,
 			"cause":     "",
 			"error":     errText,
+			"sandbox":   launchedSandbox,
 		}
 		if xe != nil {
 			payload["exit_code"] = xe.Code
@@ -261,6 +277,195 @@ func runOnce(ctx context.Context, cfg Config) error {
 		}
 		return waitErr
 	}
+}
+
+type sandboxApplier func(*exec.Cmd, sandbox.ResolvedAccessPolicy) (sandbox.EnforcementOutcome, func(), error)
+type legacySandboxApplier func(*exec.Cmd, sandbox.Profile, string) (func(), error)
+
+var (
+	applyResolvedSandbox sandboxApplier       = sandbox.ApplyResolved
+	applyLegacySandbox   legacySandboxApplier = sandbox.Apply
+)
+
+// SandboxRunState is go-runner's lifecycle view of sandbox setup for one child
+// process. It intentionally separates configured-before-Start from
+// launched-after-Start because the OS guarantee is not observed until Start
+// succeeds.
+type SandboxRunState string
+
+const (
+	SandboxStateDisabled    SandboxRunState = "disabled"
+	SandboxStateUnsupported SandboxRunState = "unsupported"
+	SandboxStateConfigured  SandboxRunState = "configured"
+	SandboxStateLaunched    SandboxRunState = "launched"
+	SandboxStateFailed      SandboxRunState = "failed"
+)
+
+// SandboxOutcome is safe to place in runner Events and errors. It records only
+// policy/backend state and diagnostics; argv, environment and secrets are not
+// copied into the value.
+type SandboxOutcome struct {
+	PolicyID           string
+	Mode               sandbox.ConfinementMode
+	Backend            sandbox.BackendName
+	State              SandboxRunState
+	Enforced           bool
+	Disabled           bool
+	Legacy             bool
+	LegacyDefaultAllow bool
+	Unsupported        []string
+	Diagnostics        []string
+	BackendGOOS        string
+	BackendReady       bool
+}
+
+// StartError wraps cmd.Start failures and carries the sandbox state that had
+// been configured before the failed Start. It lets callers distinguish backend
+// setup success from an actual launched child.
+type StartError struct {
+	Outcome SandboxOutcome
+	Err     error
+}
+
+func (e *StartError) Error() string {
+	if e == nil || e.Err == nil {
+		return "runner: start"
+	}
+	return e.Err.Error()
+}
+
+func (e *StartError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
+
+// SandboxError wraps sandbox setup failures. Unsupported backends/policies are
+// reported separately from configured backend failures.
+type SandboxError struct {
+	Outcome SandboxOutcome
+	Err     error
+}
+
+func (e *SandboxError) Error() string {
+	if e == nil || e.Err == nil {
+		return "runner: sandbox setup"
+	}
+	return e.Err.Error()
+}
+
+func (e *SandboxError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
+
+func prepareSandbox(cmd *exec.Cmd, cfg Config) (SandboxOutcome, func(), error) {
+	if cfg.SandboxPolicy != nil {
+		out, cleanup, err := applyResolvedSandbox(cmd, *cfg.SandboxPolicy)
+		mapped := sandboxOutcomeFromResolved(out)
+		if err != nil {
+			mapped.State = classifyResolvedSandboxError(out, err)
+			return mapped, func() {}, &SandboxError{Outcome: mapped, Err: fmt.Errorf("runner: sandbox apply resolved: %w", err)}
+		}
+		if cleanup == nil {
+			cleanup = func() {}
+		}
+		return mapped.Configured(), cleanup, nil
+	}
+
+	if cfg.Profile.ID == "" {
+		return SandboxOutcome{State: SandboxStateDisabled, Disabled: true}, func() {}, nil
+	}
+
+	cleanup, err := applyLegacySandbox(cmd, cfg.Profile, cfg.Workspace)
+	legacy := SandboxOutcome{
+		PolicyID:           cfg.Profile.ID,
+		Mode:               sandbox.ConfinementRequired,
+		Backend:            sandbox.BackendAuto,
+		State:              SandboxStateConfigured,
+		Enforced:           true,
+		Legacy:             true,
+		LegacyDefaultAllow: true,
+		Diagnostics:        []string{"legacy Profile adapter: default-allow compatibility semantics"},
+	}
+	if err != nil {
+		legacy.Enforced = false
+		legacy.State = classifyLegacySandboxError(err)
+		legacy.Diagnostics = append(legacy.Diagnostics, err.Error())
+		return legacy, func() {}, &SandboxError{Outcome: legacy, Err: fmt.Errorf("runner: sandbox apply legacy profile: %w", err)}
+	}
+	if cleanup == nil {
+		cleanup = func() {}
+	}
+	return legacy, cleanup, nil
+}
+
+func sandboxOutcomeFromResolved(out sandbox.EnforcementOutcome) SandboxOutcome {
+	mapped := SandboxOutcome{
+		PolicyID:     out.PolicyID,
+		Mode:         out.Mode,
+		Backend:      out.Backend,
+		Enforced:     out.Enforced,
+		Disabled:     out.Disabled,
+		Diagnostics:  append([]string(nil), out.Diagnostics...),
+		BackendGOOS:  out.BackendGOOS,
+		BackendReady: out.BackendReady,
+	}
+	for _, cap := range out.Unsupported {
+		mapped.Unsupported = append(mapped.Unsupported, string(cap))
+	}
+	switch out.State {
+	case sandbox.EnforcementDisabled:
+		mapped.State = SandboxStateDisabled
+	case sandbox.EnforcementUnsupported:
+		mapped.State = SandboxStateUnsupported
+	case sandbox.EnforcementConfigured, sandbox.EnforcementApplied:
+		mapped.State = SandboxStateConfigured
+	case sandbox.EnforcementFailed:
+		mapped.State = SandboxStateFailed
+	default:
+		mapped.State = SandboxStateFailed
+		if out.State != "" {
+			mapped.Diagnostics = append(mapped.Diagnostics, "unknown sandbox enforcement state: "+string(out.State))
+		}
+	}
+	return mapped
+}
+
+func classifyResolvedSandboxError(out sandbox.EnforcementOutcome, err error) SandboxRunState {
+	if out.State == sandbox.EnforcementUnsupported || errors.Is(err, sandbox.ErrBackendUnavailable) || errors.Is(err, sandbox.ErrUnsupportedPolicy) {
+		return SandboxStateUnsupported
+	}
+	if out.State == sandbox.EnforcementDisabled {
+		return SandboxStateDisabled
+	}
+	return SandboxStateFailed
+}
+
+func classifyLegacySandboxError(err error) SandboxRunState {
+	text := strings.ToLower(err.Error())
+	if strings.Contains(text, "not found") || strings.Contains(text, "unsupported") || strings.Contains(text, "not implemented") {
+		return SandboxStateUnsupported
+	}
+	return SandboxStateFailed
+}
+
+func (o SandboxOutcome) Configured() SandboxOutcome {
+	if o.State == SandboxStateDisabled || o.State == SandboxStateUnsupported || o.State == SandboxStateFailed {
+		return o
+	}
+	o.State = SandboxStateConfigured
+	return o
+}
+
+func (o SandboxOutcome) Launched() SandboxOutcome {
+	if o.State == SandboxStateConfigured {
+		o.State = SandboxStateLaunched
+	}
+	return o
 }
 
 // buildExitError translates the (ProcessState, waitErr) pair returned by

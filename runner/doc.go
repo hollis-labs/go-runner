@@ -1,8 +1,8 @@
 // Package runner is a thin substrate that composes go-providers (CLI adapters
-// + spawn bridges) and go-sandbox (Profile + Apply) into a single Run entry
-// point. It spawns a CLI binary under a sandbox profile, parses its structured
-// output through a provider adapter, and emits raw observed events through a
-// caller-supplied callback.
+// + spawn bridges) and go-sandbox (resolved AccessPolicy / legacy Profile
+// enforcement) into a single Run entry point. It spawns a CLI binary under an
+// optional OS sandbox, parses its structured output through a provider adapter,
+// and emits raw observed events through a caller-supplied callback.
 //
 // The runner is intentionally opinion-free about the meaning of those events:
 // it does not know what an FSM transition is, what a broker session event is,
@@ -15,8 +15,10 @@
 //  1. Resolve binary via cfg.Provider.Detect() (or fail).
 //  2. Build *exec.Cmd with cfg.Args, cfg.Env, cfg.Workspace as the working
 //     directory. cfg.Stderr (if non-nil) is wired to cmd.Stderr.
-//  3. If cfg.Profile is non-zero, wrap the cmd via go-sandbox Apply (mutates
-//     cmd.Path/Args; returns cleanup that runs after Wait).
+//  3. If cfg.SandboxPolicy is set, wrap the cmd via go-sandbox ApplyResolved.
+//     Otherwise, if cfg.Profile is non-zero, wrap via the legacy Apply adapter.
+//     Setup errors return before Start. A successful Start event carries the
+//     sanitized SandboxOutcome under Payload["sandbox"].
 //  4. Set cmd.Cancel = SIGTERM and cmd.WaitDelay (grace-period). The wait-
 //     delay is sourced from go-providers' WithWaitDelay context value; the
 //     runner installs cfg.WaitDelay onto the context before spawn when set.

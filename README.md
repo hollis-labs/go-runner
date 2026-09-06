@@ -2,18 +2,17 @@
 
 Thin Go substrate that composes [`go-providers`](https://github.com/hollis-labs/go-providers)
 (CLI adapters + spawn helpers) and [`go-sandbox`](https://github.com/hollis-labs/go-sandbox)
-(Profile + Apply) into a single `Run` entry point. It spawns a CLI binary
-under a sandbox profile, parses its structured output through a provider
-adapter, and emits **raw observed events** through a caller-supplied
-callback.
+(resolved access policy + legacy Profile enforcement) into a single `Run` entry point. It spawns a CLI binary under optional OS confinement, parses its structured output through a provider adapter, and emits **raw observed events** through a caller-supplied callback.
 
 ```go
 import "github.com/hollis-labs/go-runner/runner"
 
+resolved, _ := sandbox.ResolveAccessPolicy(policy)
+
 err := runner.Run(ctx, runner.Config{
-    Provider:  myAdapter,                    // provider.CLIAdapter
-    Profile:   myProfile,                    // sandbox.Profile (zero = no sandbox)
-    Workspace: "/abs/path/to/workspace",
+    Provider:      myAdapter,                // provider.CLIAdapter
+    SandboxPolicy: &resolved,                // preferred: required/disabled resolved policy
+    Workspace:     "/abs/path/to/workspace",
     Args:      []string{"--prompt", "hi"},
     Env:       nil,                          // nil = inherit parent env
     WaitDelay: 5 * time.Second,              // SIGTERM → SIGKILL grace; 0 = lib default
@@ -58,10 +57,10 @@ The runner emits the following `EventKind` values:
 
 | Kind                          | When                                                          | Payload keys                                                                  |
 | ----------------------------- | ------------------------------------------------------------- | ----------------------------------------------------------------------------- |
-| `process.started`             | once, after `cmd.Start` returns                               | `pid`, `binary`, `args`                                                       |
+| `process.started`             | once, after `cmd.Start` returns                               | `pid`, `binary`, `args`, `sandbox` (`SandboxOutcome`)                         |
 | `provider.event`              | per parsed `provider.StreamEvent` from stdout                 | `event` (raw `provider.StreamEvent`), `is_turn_complete`                      |
-| `process.exited`              | once, after `cmd.Wait` returns (clean or non-zero)            | `exit_code`, `signal`, `killed`, `cause`, `error`                             |
-| `process.timeout`             | once, in place of `process.exited` when ctx deadline hit      | `error`                                                                       |
+| `process.exited`              | once, after `cmd.Wait` returns (clean or non-zero)            | `exit_code`, `signal`, `killed`, `cause`, `error`, `sandbox`                  |
+| `process.timeout`             | once, in place of `process.exited` when ctx deadline hit      | `error`, `sandbox`                                                            |
 | `supervisor.restart`          | before each restart attempt (when `Supervisor.RestartOnCrash` is configured) | `attempt` (1-indexed), `prev_exit` (`*ExitError`), `backoff_for` (`time.Duration`) |
 | `supervisor.idle_kill`        | when `Supervisor.IdleKill` triggers                           | `idle_for` (`time.Duration`)                                                  |
 | `supervisor.watchdog`         | when `Supervisor.WatchdogTimeout` triggers                    | `no_activity_for` (`time.Duration`)                                           |
@@ -96,6 +95,15 @@ type ExitError struct {
 
 Existing callers that only check `if err != nil` are unaffected. Clean
 exits return `nil`.
+
+
+## Sandbox policy
+
+Prefer `Config.SandboxPolicy *sandbox.ResolvedAccessPolicy` for new callers. The runner applies it with `sandbox.ApplyResolved` before every `cmd.Start`, including supervisor restarts. Required setup failures return a `*runner.SandboxError` and no process lifecycle events are emitted. If setup succeeds but `cmd.Start` fails, the returned `*runner.StartError` carries a `SandboxOutcome` in the `configured` state so callers do not report launched enforcement.
+
+`SandboxOutcome` is intentionally sanitized: it records policy ID, backend, disabled/unsupported/configured/launched state, unsupported capabilities and diagnostics, but it does not copy argv or environment values. Start, exit and timeout events include the same outcome under `Payload["sandbox"]`; after a successful start the state is `launched`.
+
+Legacy callers may continue to set `Config.Profile`. `Config.Profile` and `Config.SandboxPolicy` are mutually exclusive. Legacy profile outcomes are marked `Legacy=true` and `LegacyDefaultAllow=true` because the old shape is compatibility/default-allow semantics. A zero-value profile and nil resolved policy means explicit unwrapped execution and reports `disabled`.
 
 ## Supervision
 
@@ -208,11 +216,12 @@ Two runnable examples ship under `examples/`:
   and spawns. `cfg.WaitDelay` (when non-zero) is installed onto the
   context via `provider.WithWaitDelay`. The grace-period mechanics
   themselves live in [`go-providers`](https://github.com/hollis-labs/go-providers).
-- **Sandbox.** When `cfg.Profile.ID` is non-empty, the runner calls
-  `sandbox.Apply(cmd, cfg.Profile, cfg.Workspace)` before `cmd.Start`,
-  wrapping with `sandbox-exec` (darwin) or `bwrap` (linux). The cleanup
-  closure runs after `cmd.Wait`. A zero-value profile skips sandboxing
-  entirely.
+- **Sandbox.** When `cfg.SandboxPolicy` is non-nil, the runner calls
+  `sandbox.ApplyResolved(cmd, *cfg.SandboxPolicy)` before `cmd.Start`. When
+  `cfg.Profile.ID` is non-empty, it calls the legacy
+  `sandbox.Apply(cmd, cfg.Profile, cfg.Workspace)` adapter instead. The cleanup
+  closure runs after `cmd.Wait`. A nil policy plus zero-value profile skips
+  sandboxing and records a disabled outcome.
 - **Parsing.** Each line read from stdout is passed to
   `cfg.Provider.ParseLine`. Each returned `StreamEvent` is wrapped in a
   `provider.event` runner event. Parse errors are silently dropped to
