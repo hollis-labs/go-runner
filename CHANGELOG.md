@@ -3,6 +3,14 @@
 All notable changes to `go-runner` are documented in this file. Per-release
 notes are also published as GitHub Releases.
 
+## v0.7.0 — 2026-09-06
+
+- Add `Config.SandboxPolicy` for resolved access policies and enforce the
+  policy before every initial spawn and supervised restart.
+- Prevent process start when required sandbox setup fails; retain legacy
+  profile compatibility and explicit enforcement outcomes.
+- Update shared dependencies to go-providers v0.26.0 and go-sandbox v0.3.0.
+
 ## v0.6.0 — 2026-05-26
 
 Dependency bump. No exported `runner` API changes; existing consumers can

@@ -4,8 +4,8 @@ go 1.26.1
 
 require (
 	github.com/hollis-labs/go-llm-types v0.3.0
-	github.com/hollis-labs/go-providers v0.23.0
-	github.com/hollis-labs/go-sandbox v0.2.1
+	github.com/hollis-labs/go-providers v0.26.0
+	github.com/hollis-labs/go-sandbox v0.3.0
 )
 
 require (
