@@ -3,7 +3,7 @@
 All notable changes to `go-runner` are documented in this file. Per-release
 notes are also published as GitHub Releases.
 
-## Unreleased
+## v0.8.0 — 2026-09-29
 
 ### Added
 
