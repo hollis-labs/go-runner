@@ -181,7 +181,7 @@ func runOnce(ctx context.Context, cfg Config) error {
 	// Resource limits wrap is applied AFTER sandbox so the rlimit-
 	// setting shell exec's into the sandbox helper which exec's into
 	// the real binary; rlimits propagate down the chain.
-	limitCleanup, err := applyResourceLimits(cmd, cfg.ResourceLimits)
+	limitCleanup, err := ApplyResourceLimits(cmd, cfg.ResourceLimits)
 	if err != nil {
 		return fmt.Errorf("runner: apply resource limits: %w", err)
 	}

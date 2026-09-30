@@ -22,7 +22,7 @@ import (
 // Layering: the systemd-run wrap is OUTERMOST (process-level cgroup),
 // the sh -c is next (rlimit setup), the original argv is innermost.
 // Caller-supplied sandbox wrapping (sandbox.Apply) sits between sh -c
-// and the original argv when both are configured — applyResourceLimits
+// and the original argv when both are configured — ApplyResourceLimits
 // runs AFTER sandbox.Apply in runOnce, so cmd.Args at this point may
 // already be `sandbox-exec -p profile-id real-binary args...`. We wrap
 // it without inspecting it.
