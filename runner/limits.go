@@ -58,16 +58,21 @@ func (r ResourceLimits) IsZero() bool {
 		r.MaxFileSize == 0
 }
 
-// applyResourceLimits wraps cmd.Path / cmd.Args with the appropriate
-// argv prefix to enforce the configured limits. Returns a cleanup
-// closure run after cmd.Wait. No-op (and returns a no-op cleanup) when
-// the limits are zero.
+// ApplyResourceLimits wraps cmd.Path / cmd.Args with the argv prefix
+// needed to enforce limits: `sh -c "ulimit ...; exec \"$@\""` for kernel
+// rlimits, layered under `systemd-run --user --scope --property=MemoryMax=...`
+// on Linux when available for MemoryMax. It returns a cleanup closure (safe
+// to call after cmd.Wait; currently a no-op) and a nil error. When
+// limits.IsZero() the cmd is left untouched and a no-op cleanup is returned.
+// On Windows a non-zero limits value returns an error.
 //
-// This is the cross-platform stub. The real per-platform implementation
-// lives in limits_unix.go (build-tagged for darwin / linux) and is
-// filled out in the ResourceLimits commit. The stub here keeps the
-// Cap-2 commit (SupervisorOptions) self-contained.
-func applyResourceLimits(cmd *exec.Cmd, limits ResourceLimits) (func(), error) {
+// This is exactly what Run applies internally before every spawn and every
+// supervised restart. It is exported so a caller that builds its own
+// *exec.Cmd outside Run (for example a PTY-based runtime) can apply identical
+// enforcement without copying the wrap logic. Call it after any sandbox
+// wrapping and before cmd.Start; the wrap does not inspect the existing argv.
+// Each call wraps again, so call it once per *exec.Cmd.
+func ApplyResourceLimits(cmd *exec.Cmd, limits ResourceLimits) (cleanup func(), err error) {
 	if limits.IsZero() {
 		return func() {}, nil
 	}

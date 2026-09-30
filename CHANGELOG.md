@@ -3,6 +3,20 @@
 All notable changes to `go-runner` are documented in this file. Per-release
 notes are also published as GitHub Releases.
 
+## v0.8.0 — 2026-09-29
+
+### Added
+
+- `ApplyResourceLimits(cmd *exec.Cmd, limits ResourceLimits) (cleanup func(), err error)`:
+  applies the resource-limit argv wrap `Run` uses internally to a caller-built
+  `*exec.Cmd`, for runtimes that spawn outside `Run` (e.g. PTY-based). Pure
+  visibility promotion of the previously unexported `applyResourceLimits`; no
+  behavior change for any existing `Config`/`Run` caller.
+- `ComputeRestartBackoff(attempt int, maxBackoff time.Duration) time.Duration`:
+  the exponential restart-backoff schedule (1s, 2s, 4s, ... capped, 30s
+  default) `Run`'s Supervisor uses. Pure visibility promotion of the previously
+  unexported `computeRestartBackoff`; no behavior change.
+
 ## v0.7.0 — 2026-09-06
 
 - Add `Config.SandboxPolicy` for resolved access policies and enforce the

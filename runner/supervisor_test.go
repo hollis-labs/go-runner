@@ -285,3 +285,38 @@ func TestSupervisor_ActivityCallback_PopulatedAtRunStart(t *testing.T) {
 		t.Error("ActivityCallback was not populated by the time EventProcessStarted fired")
 	}
 }
+
+func TestComputeRestartBackoff(t *testing.T) {
+	const def = 30 * time.Second
+	tests := []struct {
+		name    string
+		attempt int
+		max     time.Duration
+		want    time.Duration
+	}{
+		{"attempt 1", 1, def, 1 * time.Second},
+		{"attempt 2", 2, def, 2 * time.Second},
+		{"attempt 3", 3, def, 4 * time.Second},
+		{"attempt 4", 4, def, 8 * time.Second},
+		{"attempt 5", 5, def, 16 * time.Second},
+		{"attempt 6 capped at 30s", 6, def, def},
+		{"attempt 0 clamps to 1", 0, def, 1 * time.Second},
+		{"negative attempt clamps to 1", -5, def, 1 * time.Second},
+		{"zero max defaults to 30s", 10, 0, def},
+		{"negative max defaults to 30s", 10, -time.Second, def},
+		{"zero max, small attempt", 2, 0, 2 * time.Second},
+		{"custom cap below doubling", 4, 5 * time.Second, 5 * time.Second},
+		{"custom cap above doubling", 2, 5 * time.Second, 2 * time.Second},
+		{"custom cap larger than default", 6, time.Minute, 32 * time.Second},
+		{"attempt 30 hits cap", 30, time.Minute, time.Minute},
+		{"attempt above 30 returns max directly", 31, 45 * time.Second, 45 * time.Second},
+		{"huge attempt with default cap", 1000, 0, def},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := runner.ComputeRestartBackoff(tc.attempt, tc.max); got != tc.want {
+				t.Errorf("ComputeRestartBackoff(%d, %v) = %v, want %v", tc.attempt, tc.max, got, tc.want)
+			}
+		})
+	}
+}

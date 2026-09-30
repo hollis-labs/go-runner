@@ -150,6 +150,25 @@ non-nil by the time the first `OnEvent` fires). It supplements the
 runner's automatic stdout/stderr ticks; if the caller never invokes it,
 the watchdog falls back to raw I/O activity.
 
+### Computing restart backoff outside `Run`
+
+If you run your own restart loop (for example a PTY-based runtime that never
+calls `Run`), `runner.ComputeRestartBackoff` returns the same schedule
+`Supervisor.RestartOnCrash` uses: 1s, 2s, 4s, ... doubling per attempt
+(1-indexed), capped at `maxBackoff` (30s when `maxBackoff <= 0`).
+
+```go
+for attempt := 1; attempt <= 3; attempt++ {
+    if err := startMyProcess(); err == nil {
+        break
+    }
+    time.Sleep(runner.ComputeRestartBackoff(attempt, 30*time.Second)) // 1s, 2s, 4s
+}
+```
+
+This is a pure visibility export of the formula `Run` already applies; it does
+not change any `Config`/`Run` behavior.
+
 ## Resource limits
 
 Opt in via `Config.ResourceLimits` (zero value = unlimited).
@@ -181,6 +200,29 @@ real binary. Limits inherit through every fork-exec.
 Note: Go's runtime swallows `SIGXCPU` on at least darwin — Go binaries
 configured with `CPUTime` may not terminate at the soft limit. Native
 C-based binaries (sh, yes, dd, claude, codex) honor `SIGXCPU` normally.
+
+### Applying limits outside `Run`
+
+`runner.ApplyResourceLimits(cmd, limits)` applies the same argv wrap `Run` uses
+internally to a `*exec.Cmd` you built yourself. Call it after any sandbox
+wrapping and before `cmd.Start`, once per `*exec.Cmd`. It returns a cleanup
+closure (currently a no-op; call it after `cmd.Wait`) and an error; a zero
+`ResourceLimits` leaves `cmd` untouched, and Windows returns an error for
+non-zero limits.
+
+```go
+cmd := exec.Command("sh", "-c", `echo "nofile=$(ulimit -n)"`)
+cleanup, err := runner.ApplyResourceLimits(cmd, runner.ResourceLimits{MaxOpenFiles: 32})
+if err != nil {
+    log.Fatal(err)
+}
+defer cleanup()
+out, _ := cmd.Output()
+fmt.Print(string(out)) // nofile=32
+```
+
+This is a pure visibility export of the function `Run` already applies before
+every spawn and restart; it does not change any `Config`/`Run` behavior.
 
 ## Examples
 

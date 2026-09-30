@@ -248,10 +248,16 @@ func killWithGrace(cmd *exec.Cmd, grace time.Duration, procDone <-chan struct{})
 	}
 }
 
-// computeRestartBackoff returns the wait duration before restart attempt
-// `attempt` (1-indexed). Doubles per attempt, capped at maxBackoff.
-// Defaults to 30s cap if maxBackoff is non-positive.
-func computeRestartBackoff(attempt int, maxBackoff time.Duration) time.Duration {
+// ComputeRestartBackoff returns the wait duration before restart attempt
+// `attempt` (1-indexed). Doubles per attempt (1s, 2s, 4s, ...), capped at
+// maxBackoff. Defaults to a 30s cap if maxBackoff is non-positive; attempt
+// values below 1 are treated as 1.
+//
+// This is exactly the schedule runSupervised uses between restart attempts.
+// It is exported so a caller running its own restart loop outside Run's
+// Supervisor (for example a PTY-based runtime) can compute the identical
+// backoff instead of copying the formula.
+func ComputeRestartBackoff(attempt int, maxBackoff time.Duration) time.Duration {
 	if maxBackoff <= 0 {
 		maxBackoff = 30 * time.Second
 	}
@@ -280,7 +286,7 @@ func runSupervised(ctx context.Context, cfg Config) error {
 	)
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		if attempt > 1 {
-			backoff := computeRestartBackoff(attempt-1, cfg.Supervisor.MaxRestartBackoff)
+			backoff := ComputeRestartBackoff(attempt-1, cfg.Supervisor.MaxRestartBackoff)
 			cfg.OnEvent(Event{
 				Kind: EventRestart,
 				At:   time.Now(),

@@ -215,3 +215,108 @@ func TestResourceLimits_ZeroIsNoOp(t *testing.T) {
 			startedArgs[0])
 	}
 }
+
+// TestApplyResourceLimits_ArgvShape verifies the exported wrap rewrites a
+// synthetic *exec.Cmd into `sh -c "ulimit ...; exec \"$@\"" sh <orig argv>`
+// without spawning anything. MemoryMax is deliberately absent: its argv
+// depends on the host (systemd-run probe on Linux, dropped on darwin).
+func TestApplyResourceLimits_ArgvShape(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("ResourceLimits unsupported on windows")
+	}
+	shPath, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skipf("sh not found: %v", err)
+	}
+	cases := []struct {
+		name   string
+		limits runner.ResourceLimits
+		script string
+	}{
+		{"CPUTime", runner.ResourceLimits{CPUTime: 30 * time.Second}, `ulimit -t 30; exec "$@"`},
+		{"CPUTimeSubSecondRoundsUp", runner.ResourceLimits{CPUTime: 10 * time.Millisecond}, `ulimit -t 1; exec "$@"`},
+		{"MaxOpenFiles", runner.ResourceLimits{MaxOpenFiles: 64}, `ulimit -n 64; exec "$@"`},
+		{"MaxProcesses", runner.ResourceLimits{MaxProcesses: 128}, `ulimit -u 128; exec "$@"`},
+		{"MaxFileSize", runner.ResourceLimits{MaxFileSize: 2048}, `ulimit -f 2; exec "$@"`},
+		{"MaxFileSizeSubBlockRoundsUp", runner.ResourceLimits{MaxFileSize: 10}, `ulimit -f 1; exec "$@"`},
+		{
+			"AllUlimitFields",
+			runner.ResourceLimits{CPUTime: 30 * time.Second, MaxOpenFiles: 64, MaxProcesses: 128, MaxFileSize: 2048},
+			`ulimit -t 30; ulimit -n 64; ulimit -u 128; ulimit -f 2; exec "$@"`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := exec.Command("/bin/echo", "hello", "world")
+			origPath := cmd.Path
+			cleanup, err := runner.ApplyResourceLimits(cmd, tc.limits)
+			if err != nil {
+				t.Fatalf("ApplyResourceLimits: %v", err)
+			}
+			if cleanup == nil {
+				t.Fatal("cleanup is nil")
+			}
+			cleanup()
+			if cmd.Path != shPath {
+				t.Errorf("cmd.Path = %q, want %q", cmd.Path, shPath)
+			}
+			want := []string{shPath, "-c", tc.script, "sh", origPath, "hello", "world"}
+			if strings.Join(cmd.Args, "\x00") != strings.Join(want, "\x00") {
+				t.Errorf("cmd.Args = %q, want %q", cmd.Args, want)
+			}
+		})
+	}
+}
+
+// TestApplyResourceLimits_ZeroIsNoOp verifies the IsZero short-circuit
+// leaves the cmd untouched and returns a callable no-op cleanup.
+func TestApplyResourceLimits_ZeroIsNoOp(t *testing.T) {
+	cmd := exec.Command("/bin/echo", "hi")
+	origPath := cmd.Path
+	origArgs := append([]string(nil), cmd.Args...)
+	cleanup, err := runner.ApplyResourceLimits(cmd, runner.ResourceLimits{})
+	if err != nil {
+		t.Fatalf("ApplyResourceLimits: %v", err)
+	}
+	if cleanup == nil {
+		t.Fatal("cleanup is nil")
+	}
+	cleanup()
+	if cmd.Path != origPath || strings.Join(cmd.Args, "\x00") != strings.Join(origArgs, "\x00") {
+		t.Errorf("cmd mutated: path=%q args=%q", cmd.Path, cmd.Args)
+	}
+}
+
+// TestApplyResourceLimits_WindowsUnsupported pins the documented Windows
+// behavior: non-zero limits are an error and the cmd is not rewritten.
+func TestApplyResourceLimits_WindowsUnsupported(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("windows-only behavior")
+	}
+	cmd := exec.Command("cmd", "/c", "echo")
+	if _, err := runner.ApplyResourceLimits(cmd, runner.ResourceLimits{MaxOpenFiles: 64}); err == nil {
+		t.Fatal("expected error on windows for non-zero limits")
+	}
+}
+
+// TestApplyResourceLimits_EnforcedOnRealChild runs a small `sh` child through
+// the wrap and reads back the limits it sees. The limits are tiny and only
+// lower the child's own rlimits; nothing here consumes real resources.
+func TestApplyResourceLimits_EnforcedOnRealChild(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("ResourceLimits unsupported on windows")
+	}
+	cmd := exec.Command("sh", "-c", `echo "nofile=$(ulimit -n) fsize=$(ulimit -f)"`)
+	cleanup, err := runner.ApplyResourceLimits(cmd, runner.ResourceLimits{MaxOpenFiles: 48, MaxFileSize: 4096})
+	if err != nil {
+		t.Fatalf("ApplyResourceLimits: %v", err)
+	}
+	defer cleanup()
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("run wrapped cmd: %v", err)
+	}
+	if got, want := strings.TrimSpace(string(out)), "nofile=48 fsize=4"; got != want {
+		t.Errorf("child saw %q, want %q", got, want)
+	}
+}

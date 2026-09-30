@@ -33,4 +33,9 @@
 // The OnEvent callback is invoked synchronously from the run goroutine. Slow
 // callbacks block the stream; consumers should fan out to their own channel
 // or goroutine if buffering is required.
+//
+// Callers that spawn outside Run (for example a PTY-based runtime) can reuse
+// two of its building blocks directly: ApplyResourceLimits applies the same
+// resource-limit argv wrap to their own *exec.Cmd, and ComputeRestartBackoff
+// returns the restart-backoff schedule the Supervisor uses.
 package runner
