@@ -3,6 +3,20 @@
 All notable changes to `go-runner` are documented in this file. Per-release
 notes are also published as GitHub Releases.
 
+## v0.8.1 — 2026-10-01
+
+### Fixed
+
+- **A stdout line over 1 MiB no longer ends the turn** (CW-20261001-0086).
+  `Run` read the child's stdout through a `bufio.Scanner` capped at 1 MiB. A
+  longer line, such as a tool result carrying a file, stopped the reader and
+  closed stdout. Every later event of the turn was lost, and the child died of
+  SIGPIPE on its next write. Lines up to 64 MiB are now parsed whole. A longer
+  line is read through, skipped and logged, and reading carries on. If reading
+  stdout fails, the failure is logged and stdout is still drained, so the
+  child cannot block on a full pipe. The event alphabet is unchanged: an
+  oversize line is dropped like an unparseable one.
+
 ## v0.8.0 — 2026-09-29
 
 ### Added
