@@ -1,11 +1,11 @@
 package runner
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/exec"
 	"strings"
@@ -503,7 +503,11 @@ func buildExitError(ps *os.ProcessState, waitErr error, cause string) *ExitError
 // streamProviderEvents reads stdout line-by-line, runs each line through the
 // adapter, and emits one EventProviderEvent per parsed StreamEvent. Parse
 // errors are silently dropped to match go-providers' bridge behavior; the
-// adapter is the authority on what counts as a parseable line.
+// adapter is the authority on what counts as a parseable line. A line over
+// maxLineBytes is skipped and logged the same way, and reading carries on.
+// If reading fails, the failure is logged and stdout is still drained, so
+// the child never blocks on a full pipe and Run still reaches its exit
+// event.
 //
 // When activity is non-nil (supervision active), every stdout line ticks
 // the activity tracker, regardless of whether the adapter parsed it. This
@@ -512,20 +516,16 @@ func buildExitError(ps *os.ProcessState, waitErr error, cause string) *ExitError
 func streamProviderEvents(stdout io.ReadCloser, cfg Config, activity *activityTracker) {
 	defer stdout.Close()
 
-	scanner := bufio.NewScanner(stdout)
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-
-	for scanner.Scan() {
-		line := scanner.Bytes()
+	err := readLines(stdout, func(line []byte) {
 		if activity != nil {
 			activity.tick()
 		}
 		if len(line) == 0 {
-			continue
+			return
 		}
 		events, err := cfg.Provider.ParseLine(line)
 		if err != nil {
-			continue
+			return
 		}
 		for _, ev := range events {
 			cfg.OnEvent(Event{
@@ -537,5 +537,14 @@ func streamProviderEvents(stdout io.ReadCloser, cfg Config, activity *activityTr
 				},
 			})
 		}
+	}, func(n int) {
+		if activity != nil {
+			activity.tick()
+		}
+		log.Printf("runner: %s: skipped a %d-byte stdout line over the %d-byte limit; it was not parsed", cfg.Provider.Name(), n, maxLineBytes)
+	})
+	if readerFailed(err) {
+		log.Printf("runner: %s: reading stdout failed, later output is discarded: %v", cfg.Provider.Name(), err)
+		_, _ = io.Copy(io.Discard, stdout)
 	}
 }

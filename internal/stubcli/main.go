@@ -18,6 +18,8 @@
 //	-show-rlimits     before emitting events, print current RLIMIT_*
 //	                  values as delta lines (used by go-runner ResourceLimits
 //	                  tests)
+//	-big-line     N   before the deltas, emit one delta line whose content
+//	                  is N bytes (used by go-runner's long-line tests)
 package main
 
 import (
@@ -26,6 +28,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -48,6 +51,7 @@ func main() {
 	burnCPU := flag.Duration("burn-cpu", 0, "after emitting events, busy-loop for this duration before exit")
 	mallocMB := flag.Int("malloc-mb", 0, "after emitting events, allocate this many MiB and hold it")
 	showRlimits := flag.Bool("show-rlimits", false, "before emitting events, print current RLIMIT_* values as delta lines")
+	bigLine := flag.Int("big-line", 0, "before the deltas, emit one delta line whose content is this many bytes")
 	flag.Parse()
 
 	if *trapSigterm {
@@ -68,6 +72,10 @@ func main() {
 		emitRlimit("cpu", syscall.RLIMIT_CPU)
 		emitRlimit("nofile", syscall.RLIMIT_NOFILE)
 		emitRlimit("fsize", syscall.RLIMIT_FSIZE)
+	}
+
+	if *bigLine > 0 {
+		fmt.Fprintf(os.Stdout, "{\"type\":\"delta\",\"content\":\"%s\"}\n", strings.Repeat("x", *bigLine))
 	}
 
 	for i := 0; i < *count; i++ {
