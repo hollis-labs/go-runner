@@ -309,6 +309,54 @@ func TestRun_ExitError_NonZeroExit(t *testing.T) {
 	}
 }
 
+// A stdout line over 1 MiB used to stop the reader: the 1 MiB scanner gave
+// up, stdout was closed, every later event was lost and the child died on
+// its next write (CW-20261001-0086). Now the big line is parsed whole and
+// the rest of the turn follows.
+func TestRun_LineOverOneMiBKeepsTheTurn(t *testing.T) {
+	bin := buildStubCLI(t)
+	const big = 1536 * 1024
+	var (
+		mu       sync.Mutex
+		contents []string
+		done     bool
+	)
+	cfg := runner.Config{
+		Provider:  &stubAdapter{binPath: bin},
+		Workspace: t.TempDir(),
+		Args:      []string{"-big-line", "1572864", "-count", "2"},
+		OnEvent: func(ev runner.Event) {
+			if ev.Kind != runner.EventProviderEvent {
+				return
+			}
+			se := ev.Payload["event"].(llmtypes.StreamEvent)
+			mu.Lock()
+			defer mu.Unlock()
+			switch se.Type {
+			case llmtypes.EventDelta:
+				contents = append(contents, se.Content)
+			case llmtypes.EventDone:
+				done = true
+			}
+		},
+	}
+	if err := runner.Run(context.Background(), cfg); err != nil {
+		t.Fatalf("Run after a 1.5 MiB line: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(contents) != 3 || len(contents[0]) != big || contents[1] != "chunk-0 " || contents[2] != "chunk-1 " {
+		lens := make([]int, len(contents))
+		for i, c := range contents {
+			lens[i] = len(c)
+		}
+		t.Errorf("delta content lengths = %v, want [%d 8 8]", lens, big)
+	}
+	if !done {
+		t.Error("the done event after the big line never arrived")
+	}
+}
+
 func TestRun_ExitError_CleanExit_ReturnsNil(t *testing.T) {
 	bin := buildStubCLI(t)
 	workspace := t.TempDir()
