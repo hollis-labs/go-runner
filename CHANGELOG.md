@@ -3,6 +3,34 @@
 All notable changes to `go-runner` are documented in this file. Per-release
 notes are also published as GitHub Releases.
 
+## v0.8.2 — 2026-10-01
+
+### Fixed
+
+Resource limits on Linux (CW-20261001-0108).
+
+- **`MaxFileSize` was half what was asked for on Linux.** The runner passed
+  `bytes/1024` to `sh -c "ulimit -f …"`, assuming 1024-byte blocks. POSIX
+  says 512, and dash (Linux's `/bin/sh`), busybox and bash invoked as `sh`
+  (POSIX mode, bash 4+) all count 512. Only bash 3.2, macOS's `/bin/sh`,
+  counts 1024. The runner now measures the block once per process: under
+  `ulimit -f 1`, a 600-byte write stops at 512 bytes or completes. If the
+  measurement fails it uses 1024, which never grants more than was asked.
+  `TestResourceLimits_RlimitsApplied` was right; the code was wrong.
+- **`MemoryMax` could be exceeded through swap.** cgroup v2 reclaims to swap
+  before it OOM-kills, and a transient scope's `memory.swap.max` defaults to
+  `max`. On a host with free swap, a 200 MiB allocation under
+  `MemoryMax=50M` finished cleanly, which is the reported
+  `TestResourceLimits_MemoryMax_Linux` failure (it passes when swap is full,
+  as it was during this fix). The scope now also gets `MemorySwapMax=0`. The
+  new `TestResourceLimits_MemoryMaxCapsSwap_Linux` reads the scope's own
+  limits from inside the child, so it holds whatever swap the host has free.
+- **The systemd-run probe could pass where the user manager was
+  unreachable.** `systemd-run --user --version` never contacts the manager,
+  so with no user bus (or under a sandbox that hides it) every `MemoryMax`
+  launch failed, instead of falling back to `ulimit -v` as documented. The
+  probe now starts a transient scope.
+
 ## v0.8.1 — 2026-10-01
 
 ### Fixed

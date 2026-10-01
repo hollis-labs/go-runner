@@ -176,15 +176,21 @@ Opt in via `Config.ResourceLimits` (zero value = unlimited).
 | Field           | Linux (systemd available)              | Linux (no systemd)              | macOS                                                         | Windows |
 | --------------- | -------------------------------------- | ------------------------------- | ------------------------------------------------------------- | ------- |
 | `CPUTime`       | `ulimit -t` (RLIMIT_CPU)               | `ulimit -t` (RLIMIT_CPU)        | `ulimit -t` (RLIMIT_CPU)                                      | unsupported |
-| `MemoryMax`     | systemd-run `MemoryMax` (cgroup v2; real OOM-kill) | `ulimit -v` (RLIMIT_AS; advisory) | **silently dropped** — no VM-isolation; `RLIMIT_AS` not exposed via `ulimit -v` on darwin's bash | unsupported |
+| `MemoryMax`     | systemd-run `MemoryMax` with `MemorySwapMax=0` (cgroup v2; real OOM-kill, swap can't extend it) | `ulimit -v` (RLIMIT_AS; advisory) | **silently dropped** — no VM-isolation; `RLIMIT_AS` not exposed via `ulimit -v` on darwin's bash | unsupported |
 | `MaxOpenFiles`  | `ulimit -n`                            | `ulimit -n`                     | `ulimit -n`                                                   | unsupported |
 | `MaxProcesses`  | `ulimit -u`                            | `ulimit -u`                     | `ulimit -u`                                                   | unsupported |
-| `MaxFileSize`   | `ulimit -f` (1024-byte blocks)         | `ulimit -f`                     | `ulimit -f`                                                   | unsupported |
+| `MaxFileSize`   | `ulimit -f` (block size measured: 512 bytes in dash) | `ulimit -f`         | `ulimit -f` (1024-byte blocks in bash 3.2)                    | unsupported |
 
-systemd-run availability is probed once per process via
-`systemd-run --user --version`. Probe failure (missing binary,
-no user bus, Alpine, minimal containers) cleanly falls back to
-ulimit-only enforcement; the runner does not error.
+systemd-run availability is probed once per process by starting a
+transient scope (`systemd-run --user --scope -- true`). Probe failure
+(missing binary, no user bus, a sandbox hiding the user manager,
+Alpine, minimal containers) cleanly falls back to ulimit-only
+enforcement; the runner does not error.
+
+`ulimit -f` counts blocks whose size depends on the shell: 512 bytes in
+dash, busybox and POSIX-mode bash (bash 4+ invoked as `sh`), 1024 in
+bash 3.2 (macOS's `/bin/sh`). The runner measures it once per process,
+so `MaxFileSize` is the byte count asked for, rounded down to a block.
 
 **macOS memory limits.** macOS bash's `ulimit -v` does not bind to
 `RLIMIT_AS` (which itself is not exposed there), and there is no

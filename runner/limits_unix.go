@@ -4,7 +4,9 @@ package runner
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -67,12 +69,9 @@ func applyResourceLimitsImpl(cmd *exec.Cmd, limits ResourceLimits) (func(), erro
 		ulimitParts = append(ulimitParts, fmt.Sprintf("ulimit -u %d", limits.MaxProcesses))
 	}
 	if limits.MaxFileSize > 0 {
-		// bash's ulimit -f default unit is 1024-byte blocks (kilobytes);
-		// POSIX-strict mode uses 512-byte blocks but go-runner does not
-		// invoke `set -o posix`, so 1024 is correct on both linux and
-		// darwin's /bin/sh (which is bash on darwin and dash on linux —
-		// dash also uses 1024-byte blocks for -f by default).
-		blocks := limits.MaxFileSize / 1024
+		// ulimit -f counts blocks whose size depends on the shell: see
+		// shellFileSizeBlock.
+		blocks := limits.MaxFileSize / shellFileSizeBlock(shPath)
 		if blocks < 1 {
 			blocks = 1
 		}
@@ -101,6 +100,12 @@ func applyResourceLimitsImpl(cmd *exec.Cmd, limits ResourceLimits) (func(), erro
 			"--scope",
 			"--quiet",
 			fmt.Sprintf("--property=MemoryMax=%d", limits.MemoryMax),
+			// Without this the scope may swap past MemoryMax: cgroup v2
+			// reclaims to swap before it OOM-kills, and a transient
+			// scope's memory.swap.max defaults to max. On a host with
+			// free swap a 200 MiB allocation under MemoryMax=50M then
+			// finishes cleanly (CW-20261001-0108).
+			"--property=MemorySwapMax=0",
 		}
 		srArgs = append(srArgs, "--")
 		srArgs = append(srArgs, cmd.Args...)
@@ -116,22 +121,66 @@ var (
 	systemdProbeResult bool
 )
 
-// systemdRunUserAvailable returns true if `systemd-run --user` is
-// usable (binary present + version probe succeeds). Probe runs once
-// per process. On non-linux platforms always returns false.
+// systemdRunUserAvailable returns true if `systemd-run --user --scope`
+// works here: it starts a transient scope running true. `--version` alone
+// never contacts the user manager, so it succeeded where the manager is
+// unreachable (no user bus, a sandbox hiding it) and every MemoryMax launch
+// then failed instead of falling back to ulimit -v. Probe runs once per
+// process. On non-linux platforms always returns false.
 func systemdRunUserAvailable() bool {
 	systemdProbeOnce.Do(func() {
 		if runtime.GOOS != "linux" {
 			return
 		}
-		if _, err := exec.LookPath("systemd-run"); err != nil {
+		srPath, err := exec.LookPath("systemd-run")
+		if err != nil {
 			return
 		}
-		cmd := exec.Command("systemd-run", "--user", "--version")
+		truePath, err := exec.LookPath("true")
+		if err != nil {
+			return
+		}
+		cmd := exec.Command(srPath, "--user", "--scope", "--quiet", "--", truePath)
 		if err := cmd.Run(); err != nil {
 			return
 		}
 		systemdProbeResult = true
 	})
 	return systemdProbeResult
+}
+
+var (
+	fsizeBlockOnce sync.Once
+	fsizeBlock     uint64
+)
+
+// shellFileSizeBlock reports the size of the blocks sh's `ulimit -f`
+// counts. POSIX says 512 bytes, and dash, busybox and bash in POSIX mode
+// (bash 4+ invoked as sh) count 512; bash 3.2, macOS's /bin/sh, counts 1024.
+// go-runner assumed 1024 everywhere, so on Linux MaxFileSize came out at
+// half (CW-20261001-0108). It is measured once: under `ulimit -f 1`, a
+// 600-byte write stops at 512 bytes if a block is 512 bytes and completes
+// if it is 1024. If the measurement fails it answers 1024, which never
+// grants more than was asked.
+func shellFileSizeBlock(shPath string) uint64 {
+	fsizeBlockOnce.Do(func() {
+		fsizeBlock = measureFileSizeBlock(shPath)
+	})
+	return fsizeBlock
+}
+
+func measureFileSizeBlock(shPath string) uint64 {
+	dir, err := os.MkdirTemp("", "go-runner-fsize-")
+	if err != nil {
+		return 1024
+	}
+	defer func() { _ = os.RemoveAll(dir) }()
+	probe := filepath.Join(dir, "probe")
+	// The write past the limit raises SIGXFSZ, which ends the shell; only
+	// the file's size matters.
+	_ = exec.Command(shPath, "-c", `ulimit -f 1 && printf '%0600d' 0 > "$1"`, "sh", probe).Run()
+	if info, err := os.Stat(probe); err == nil && info.Size() == 512 {
+		return 512
+	}
+	return 1024
 }

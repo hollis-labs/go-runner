@@ -30,10 +30,11 @@ type ResourceLimits struct {
 	// RLIMIT_CPU. macOS: RLIMIT_CPU.
 	CPUTime time.Duration
 
-	// MemoryMax is the maximum virtual memory in bytes. Linux: when
-	// systemd-run is available, enforced as cgroup v2 memory.max
-	// (real OOM-kill on overshoot). Otherwise / on macOS: RLIMIT_AS
-	// (advisory; see godoc above).
+	// MemoryMax is the maximum memory in bytes. Linux: when
+	// systemd-run --user can start a scope, enforced as cgroup v2
+	// memory.max with memory.swap.max=0, so swap cannot extend it (real
+	// OOM-kill on overshoot). Otherwise: RLIMIT_AS (advisory; see godoc
+	// above). macOS: dropped.
 	MemoryMax uint64
 
 	// MaxOpenFiles is the maximum number of open file descriptors
@@ -45,7 +46,8 @@ type ResourceLimits struct {
 	MaxProcesses uint64
 
 	// MaxFileSize is the maximum size of any single file the process
-	// can create or extend, in bytes (RLIMIT_FSIZE).
+	// can create or extend, in bytes (RLIMIT_FSIZE), rounded down to the
+	// shell's ulimit -f block (512 bytes on Linux's sh, 1024 on macOS's).
 	MaxFileSize uint64
 }
 
