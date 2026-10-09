@@ -1,5 +1,12 @@
 # Changelog
 
+## Repository retirement — 2026-10-09
+
+- Deprecated this standalone repository in favor of `github.com/hollis-labs/substrate/harness@v0.3.0`
+  ([migration guide](https://github.com/hollis-labs/substrate/blob/harness/v0.3.0/harness/docs/units/go-runner/MIGRATION.md)).
+- Preserved existing release tags and history. This documentation change does
+  not create a new standalone release or migrate applications.
+
 All notable changes to `go-runner` are documented in this file. Per-release
 notes are also published as GitHub Releases.
 
